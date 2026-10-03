@@ -1,0 +1,13 @@
+{
+  "music_stream": {
+    "subtitle": "SimpMusic Stream",
+    "sounds": [
+      {
+        "name": "simpmusic:music_stream",
+        "stream": true,
+        "volume": 1.0,
+        "pitch": 1.0
+      }
+    ]
+  }
+}

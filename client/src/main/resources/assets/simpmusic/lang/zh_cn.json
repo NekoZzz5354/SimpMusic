@@ -1,0 +1,15 @@
+{
+  "key.simpmusic.open_menu": "打开点歌菜单",
+  "category.simpmusic.music": "SimpMusic",
+  "simpmusic.search.placeholder": "搜索歌曲...",
+  "simpmusic.gui.title": "SimpMusic - 点歌台",
+  "simpmusic.gui.search": "搜索",
+  "simpmusic.gui.play": "播放",
+  "simpmusic.gui.stop": "停止",
+  "simpmusic.gui.skip": "跳过",
+  "simpmusic.gui.close": "关闭",
+  "simpmusic.status.searching": "搜索中...",
+  "simpmusic.status.no_results": "未找到结果",
+  "simpmusic.status.playing": "正在播放: %s",
+  "simpmusic.status.stopped": "音乐已停止"
+}

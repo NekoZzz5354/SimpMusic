@@ -1,0 +1,19 @@
+pluginManagement {
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        maven { url = "https://mirrors.cloud.tencent.com/nexus/repository/maven-public/" }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        maven { url = "https://maven.fabricmc.net/" }
+        maven { url = "https://libraries.minecraft.net/" }
+        maven { url = "https://mirrors.cloud.tencent.com/nexus/repository/maven-public/" }
+        maven { url = uri("${rootDir}/.gradle/loom-cache/minecraftMaven") }
+        maven { url = uri("${rootDir}/.gradle/loom-cache/remapped_mods") }
+    }
+}
+
+rootProject.name = "simpmusic-server"

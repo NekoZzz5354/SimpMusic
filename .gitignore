@@ -1,0 +1,28 @@
+# ---- 构建产物 ----
+build/
+.gradle/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# ---- 敏感凭证：网易云 Cookie（严禁入库！）----
+163cookie.json
+cookie.json
+*.cookie.json
+
+# ---- 本地配置 ----
+SimpMusic/
+config-server.json
+config-client.json
+run/
+logs/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db

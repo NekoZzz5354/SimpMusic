@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "simpmusic",
+  "version": "${version}",
+  "name": "SimpMusic",
+  "description": "全服点歌插件 - 网易云音乐集成 (客户端) | 可选兼容 MTR 1.20.4-3.2.2-hotfix-1",
+  "authors": ["NekoZzz5354"],
+  "contact": {
+    "issues": "https://github.com/NekoZzz5354/MTRMusic/issues",
+    "sources": "https://github.com/NekoZzz5354/MTRMusic",
+    "homepage": "https://github.com/NekoZzz5354/MTRMusic"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.simpmusic.client.SimpMusicClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": ">=0.97.3+1.20.4",
+    "minecraft": "1.20.4"
+  },
+  "mixins": []
+}

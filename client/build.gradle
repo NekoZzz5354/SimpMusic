@@ -1,0 +1,62 @@
+plugins {
+    id 'fabric-loom' version '1.6.12'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = 'SimpMusic-Client'
+}
+
+
+configurations {
+    bundled
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // 解码库：编译期可见（compileOnly），运行时 class 已合并进 jar
+    compileOnly "com.googlecode.soundlibs:mp3spi:${project.mp3spi_version}"
+    compileOnly "com.googlecode.soundlibs:jlayer:${project.jlayer_version}"
+    compileOnly "com.googlecode.soundlibs:tritonus-share:${project.tritonus_version}"
+
+    bundled "com.googlecode.soundlibs:mp3spi:${project.mp3spi_version}"
+    bundled "com.googlecode.soundlibs:jlayer:${project.jlayer_version}"
+    bundled "com.googlecode.soundlibs:tritonus-share:${project.tritonus_version}"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.encoding = "UTF-8"
+    it.options.release = 17
+}
+
+processResources {
+    inputs.property "version", project.mod_version   // 版本变化时强制重新展开
+    filesMatching("fabric.mod.json") {
+        expand "version": project.mod_version
+    }
+}
+
+jar {
+    // 将 MP3 解码库 class 直接合并进客户端 jar（与 v1.0.8 起的发布方式一致）
+    from(configurations.bundled.collect { it.isDirectory() ? it : zipTree(it) }) {
+        exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/INDEX.LIST'
+        exclude 'junit/**'   // mp3spi 传递依赖带出，原发布包不含
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from("LICENSE") {
+        rename { "${it}_Client" }
+    }
+}

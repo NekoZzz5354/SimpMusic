@@ -1,0 +1,15 @@
+{
+  "key.simpmusic.open_menu": "Open Music Menu",
+  "category.simpmusic.music": "SimpMusic",
+  "simpmusic.search.placeholder": "Search songs...",
+  "simpmusic.gui.title": "SimpMusic - Request Songs",
+  "simpmusic.gui.search": "Search",
+  "simpmusic.gui.play": "Play",
+  "simpmusic.gui.stop": "Stop",
+  "simpmusic.gui.skip": "Skip",
+  "simpmusic.gui.close": "Close",
+  "simpmusic.status.searching": "Searching...",
+  "simpmusic.status.no_results": "No results found",
+  "simpmusic.status.playing": "Now Playing: %s",
+  "simpmusic.status.stopped": "Music stopped"
+}
