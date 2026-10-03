@@ -29,7 +29,7 @@ import net.minecraft.util.Formatting;
 public class UpdateChecker {
    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10L)).build();
    private static String apiBaseUrl = "https://api.github.com";
-   private static String repoPath = "NekoZzz5354/MTRMusic";
+   private static String repoPath = "NekoZzz5354/SimpMusic";
    private static String authToken = "";
    private static boolean enabled = true;
    private static long checkIntervalMs = 21600000L;
@@ -77,7 +77,7 @@ public class UpdateChecker {
    }
 
    public static void setRepoPath(String path) {
-      repoPath = path != null && !path.isEmpty() ? path : "NekoZzz5354/MTRMusic";
+      repoPath = path != null && !path.isEmpty() ? path : "NekoZzz5354/SimpMusic";
       ClientConfig.setUpdateRepoPath(repoPath);
    }
 
@@ -164,12 +164,16 @@ public class UpdateChecker {
 
                for (String base : candidates) {
                   try {
-                     String url = base.replaceAll("/$", "") + "/repos/" + repoPath + "/releases/latest";
+                     // 缓存破坏：拼时间戳查询参数 + no-cache 头，避免 CDN/代理返回旧结果导致检测不到新版本
+                     String url = base.replaceAll("/$", "") + "/repos/" + repoPath + "/releases/latest"
+                        + "?_cb=" + System.currentTimeMillis();
                      SimpMusicClient.LOGGER.debug("[UpdateChecker] Requesting: {}", url);
                      Builder builder = HttpRequest.newBuilder(URI.create(url))
                         .header("Accept", "application/vnd.github+json")
                         .header("User-Agent", "SimpMusic-Client/" + getCurrentVersion())
                         .header("X-GitHub-Api-Version", "2022-11-28")
+                        .header("Cache-Control", "no-cache, no-store, max-age=0")
+                        .header("Pragma", "no-cache")
                         .timeout(Duration.ofSeconds(8L))
                         .GET();
                      if (authToken != null && !authToken.isEmpty()) {

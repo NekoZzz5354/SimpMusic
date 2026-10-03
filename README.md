@@ -19,8 +19,8 @@
 
 | 文件 | 放置位置 |
 |------|---------|
-| `SimpMusic-Server-1.1.4.jar` | 服务器 `mods/` |
-| `SimpMusic-Client-1.1.4.jar` | 客户端 `mods/` |
+| `SimpMusic-Server-1.1.5.jar` | 服务器 `mods/` |
+| `SimpMusic-Client-1.1.5.jar` | 客户端 `mods/` |
 
 > 服务端与客户端**都要装**，且版本必须一致。
 
@@ -43,11 +43,14 @@
 
 | 文件 | 说明 |
 |------|------|
-| `config-server.json` | 服务端：API、码率、队列上限、音量、BossBar |
-| `config-client.json` | 客户端：音量倍率、缓冲、音效类 |
-| `cookie.json` | 网易云 Cookie（填后可播放 VIP 歌曲） |
+| `config-server.json` | 服务端：API、码率、队列上限、音量、BossBar、更新检查间隔 |
+| `config-client.json` | 客户端：音量倍率、缓冲、音效类、更新检查间隔 |
+| `163cookie.json` | 网易云 Cookie（**仅服务端**，填后可播放 VIP 歌曲） |
 
 > 从 MTRMusic 升级时，旧 `MTRMusic/` 目录会在首次启动自动改名为 `SimpMusic/`。
+>
+> **v1.1.5 起 VIP Cookie 仅需服务端配置一份**，客户端不再读取 Cookie；
+> 更新检查间隔（分钟）可在两端配置文件中分别设置，默认 `360`。
 
 ## 📋 依赖要求
 

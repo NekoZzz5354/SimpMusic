@@ -34,6 +34,42 @@
 
 ---
 
+## [1.1.5] - 2026-10-03
+
+### 🔧 变更 - 会员 Cookie 改为仅服务端配置
+
+- **客户端不再读取任何 Cookie 文件**：删除客户端 `CookieManager`，
+  `SimpMusicClient` 中的 `CookieManager.load()` 调用一并移除。
+- 客户端 `NeteaseApiClient#resolveOfficialSongUrl` 回退为**无凭证解析**：
+  VIP 歌曲的鉴权统一由服务端完成，服务端下发的是已解析好的直链；
+  客户端仅在服务端模式下作为兜底，解析不出则回退 `outer/url`。
+- **好处**：Cookie 是敏感凭据，只留在服务端一份，玩家客户端无需分发、降低泄露面。
+
+### 🔧 变更 - 更新检测指向当前 GitHub 项目
+
+- 更新检测仓库地址由 `NekoZzz5354/MTRMusic` 改为 **`NekoZzz5354/SimpMusic`**
+  （双端 `UpdateChecker`、`ModConfig`、`ClientConfig`、`fabric.mod.json` 同步）。
+- 修正此前更名后更新检测仍指向旧仓库、导致永远检测不到新版本的问题。
+
+### ✨ 新增 - 更新检测缓存破坏
+
+- 请求 GitHub Release 接口时追加 **`?_cb=<毫秒时间戳>`** 查询参数，
+  并附带 `Cache-Control: no-cache, no-store, max-age=0` 与 `Pragma: no-cache` 请求头，
+  避免 CDN / 代理缓存旧响应导致「明明发了新版本却检测不到」。
+
+### ✨ 新增 - 更新检查间隔可配置（单位：分钟）
+
+- 服务端 `config-server.json` 新增 **`updateCheckIntervalMinutes`**（默认 `360` 分钟）；
+- 客户端 `config-client.json` 新增 **`update_interval_minutes`**（默认 `360` 分钟）；
+- 两者均**强制下限 1 分钟**，避免误填 0 导致每次 tick 都发请求；配置文件内附中文注释说明。
+
+### 📝 其他
+
+- README / RELEASE 文档同步更新：Cookie 配置仅需服务端一份。
+- 版本号 1.1.5。
+
+---
+
 ## [1.1.4] - 2026-10-03
 
 ### ✨ 新增 - 网易云 VIP Cookie 适配（浏览器导出格式）

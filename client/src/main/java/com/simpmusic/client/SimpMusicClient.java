@@ -26,7 +26,7 @@ import org.slf4j.LoggerFactory;
 public class SimpMusicClient implements ClientModInitializer {
    public static final String MOD_ID = "simpmusic";
    public static final String MOD_NAME = "SimpMusic";
-   public static final String VERSION = "1.1.4";
+   public static final String VERSION = "1.1.5";
    public static final Logger LOGGER = LoggerFactory.getLogger("SimpMusic");
    private static KeyBinding openMusicScreenKey;
    private static boolean isPlaying = false;
@@ -44,13 +44,6 @@ public class SimpMusicClient implements ClientModInitializer {
          LOGGER.info("Music API: {}", apiUrl);
       } catch (Exception e) {
          LOGGER.error("Failed to apply music API config: {}", e.getMessage());
-      }
-
-      // v1.1.4：加载网易云 Cookie（浏览器导出的 163cookie.json），VIP 歌曲播放依赖它
-      try {
-         CookieManager.load();
-      } catch (Exception e) {
-         LOGGER.error("Failed to load netease cookie: {}", e.getMessage());
       }
 
       try {

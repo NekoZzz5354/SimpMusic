@@ -135,7 +135,7 @@ public class MusicQueueManager {
 
          return true;
       } else {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c无法获取该歌曲的播放链接（可能是VIP歌曲，可配置 netease_cookie）").formatted(Formatting.RED), false);
+         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c无法获取该歌曲的播放链接（可能是 VIP 歌曲，请在服务端配置网易云 Cookie）").formatted(Formatting.RED), false);
          return false;
       }
    }

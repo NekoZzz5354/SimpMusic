@@ -18,8 +18,9 @@ public class ClientConfig {
    private static String musicApiUrl = "https://music.163.com";
    private static boolean updateEnabled = true;
    private static String updateApiUrl = "https://api.github.com";
-   private static String updateRepoPath = "NekoZzz5354/MTRMusic";
+   private static String updateRepoPath = "NekoZzz5354/SimpMusic";
    private static String updateToken = "";
+   /** 更新检查间隔，单位分钟 */
    private static int updateIntervalMinutes = 360;
    private static int audioBufferSize = 4096;
    private static boolean tickSoundEnabled = true;
@@ -143,6 +144,7 @@ public class ClientConfig {
          json.addProperty("update_api_url", updateApiUrl);
          json.addProperty("update_repo_path", updateRepoPath);
          json.addProperty("update_token", updateToken);
+         // 更新检查间隔（分钟）：每隔多少分钟向 GitHub 查询一次新版本，最小 1
          json.addProperty("update_interval_minutes", updateIntervalMinutes);
          json.addProperty("audio_buffer_size", audioBufferSize);
          json.addProperty("tick_sound_enabled", tickSoundEnabled);
@@ -151,6 +153,8 @@ public class ClientConfig {
          json.addProperty("volume_multiplier", volumeMultiplier);
          json.addProperty("mtr_compat_mode", mtrCompatMode);
          json.addProperty("_comment", "Edit values below. Backup is auto-saved to config-client.json.bak");
+         json.addProperty("_comment_update_interval_minutes", "更新检查间隔，单位为分钟（每隔多少分钟检查一次新版本，最小 1）");
+         json.addProperty("_comment_netease_cookie", "网易云 VIP Cookie 仅在服务端配置：把 163cookie.json 放到服务器的 SimpMusic/163cookie.json（客户端无需配置）");
          Files.writeString(CONFIG_FILE, GSON.toJson(json), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
       } catch (IOException e) {
          SimpMusicClient.LOGGER.error("Failed to save client config", e);
@@ -175,7 +179,7 @@ public class ClientConfig {
    }
 
    public static String getUpdateRepoPath() {
-      return updateRepoPath != null ? updateRepoPath : "NekoZzz5354/MTRMusic";
+      return updateRepoPath != null ? updateRepoPath : "NekoZzz5354/SimpMusic";
    }
 
    public static String getUpdateToken() {
@@ -226,7 +230,7 @@ public class ClientConfig {
    }
 
    public static void setUpdateRepoPath(String path) {
-      updateRepoPath = path != null ? path : "NekoZzz5354/MTRMusic";
+      updateRepoPath = path != null ? path : "NekoZzz5354/SimpMusic";
       save();
    }
 

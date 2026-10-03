@@ -20,6 +20,10 @@ public class NeteaseApiClient {
    private static String apiBaseUrl = "https://music.163.com";
    private static final String OFFICIAL_HOST = "music.163.com";
 
+   /** 移动端 UA：网易云对移动端放行的音质档位更高 */
+   private static final String UA_MOBILE =
+      "Mozilla/5.0 (Linux; Android 11; V2123A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
+
    public static boolean isOfficialMode() {
       return apiBaseUrl != null && apiBaseUrl.contains("music.163.com");
    }
@@ -108,7 +112,7 @@ public class NeteaseApiClient {
       return CompletableFuture.supplyAsync(() -> {
          try {
             if (isOfficialMode()) {
-               // v1.1.4：带 Cookie 直连官方接口解析真实地址，否则 VIP 歌曲拿不到链接
+               // v1.1.5：客户端不再持有 Cookie，VIP 鉴权由服务端完成并下发直链
                String real = resolveOfficialSongUrl(songId, bitrate);
                if (real != null) {
                   return real;
@@ -158,63 +162,50 @@ public class NeteaseApiClient {
    }
 
    /**
-    * 带 Cookie 解析官方播放地址（v1.1.4）。
+    * 解析官方播放地址（v1.1.5：客户端不再持有 Cookie，仅作无凭证解析）。
     *
-    * <p>优先使用配置码率，失败后回退 320k；移动端 UA 的 VIP 放行率更高。
-    * 解析不出来返回 null，由调用方走 outer/url 兜底。
+    * <p>VIP 歌曲的鉴权统一由服务端完成，服务端下发的是已解析好的直链；
+    * 此处仅在服务端模式下作为兜底，解析不出则回退 outer/url。
     */
    private static String resolveOfficialSongUrl(String songId, int bitrate) {
-      String cookie = CookieManager.getNeteaseCookie();
       int[] bitrates = bitrate == 320000 ? new int[]{320000} : new int[]{bitrate, 320000};
 
-      for (String ua : new String[]{
-         "Mozilla/5.0 (Linux; Android 11; V2123A) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36",
-         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      }) {
-         for (int br : bitrates) {
-            try {
-               String url = "https://music.163.com/api/song/enhance/player/url?ids=["
-                  + songId + "]&br=" + br + "&encodeType=mp3";
-               HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-                  .header("User-Agent", ua)
-                  .header("Referer", "https://music.163.com/")
-                  .timeout(Duration.ofSeconds(10L));
-               if (cookie != null && !cookie.isEmpty()) {
-                  builder.header("Cookie", cookie);
-               }
+      for (int br : bitrates) {
+         try {
+            String url = "https://music.163.com/api/song/enhance/player/url?ids=["
+               + songId + "]&br=" + br + "&encodeType=mp3";
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+               .header("User-Agent", UA_MOBILE)
+               .header("Referer", "https://music.163.com/")
+               .timeout(Duration.ofSeconds(10L))
+               .build();
 
-               HttpResponse<String> resp = HTTP.send(builder.build(), BodyHandlers.ofString(StandardCharsets.UTF_8));
-               if (resp.statusCode() != 200) {
-                  continue;
-               }
-
-               JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
-               if (!root.has("data") || !root.get("data").isJsonArray()) {
-                  continue;
-               }
-
-               JsonArray data = root.getAsJsonArray("data");
-               if (data.size() == 0) {
-                  continue;
-               }
-
-               JsonObject d = data.get(0).getAsJsonObject();
-               if (d.has("url") && !d.get("url").isJsonNull()) {
-                  String real = d.get("url").getAsString();
-                  if (real != null && !real.isEmpty()) {
-                     String level = d.has("level") && !d.get("level").isJsonNull() ? d.get("level").getAsString() : "unknown";
-                     SimpMusicClient.LOGGER.info("Client song url: id={} br={} level={}", songId, br, level);
-                     return real;
-                  }
-               }
-            } catch (Exception e) {
-               SimpMusicClient.LOGGER.debug("Client resolve song url failed (br={}): {}", br, e.getMessage());
+            HttpResponse<String> resp = HTTP.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() != 200) {
+               continue;
             }
-         }
-      }
 
-      if (!CookieManager.hasCookie()) {
-         SimpMusicClient.LOGGER.warn("Song {} 解析失败且未配置网易云 Cookie —— VIP 歌曲需要 163cookie.json", songId);
+            JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
+            if (!root.has("data") || !root.get("data").isJsonArray()) {
+               continue;
+            }
+
+            JsonArray data = root.getAsJsonArray("data");
+            if (data.size() == 0) {
+               continue;
+            }
+
+            JsonObject d = data.get(0).getAsJsonObject();
+            if (d.has("url") && !d.get("url").isJsonNull()) {
+               String real = d.get("url").getAsString();
+               if (real != null && !real.isEmpty()) {
+                  SimpMusicClient.LOGGER.info("Client song url: id={} br={}", songId, br);
+                  return real;
+               }
+            }
+         } catch (Exception e) {
+            SimpMusicClient.LOGGER.debug("Client resolve song url failed (br={}): {}", br, e.getMessage());
+         }
       }
 
       return null;

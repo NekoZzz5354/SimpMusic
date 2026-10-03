@@ -14,7 +14,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 网易云 Cookie 管理器（v1.1.4 起支持浏览器导出格式）
+ * 网易云 Cookie 管理器（仅服务端使用）
+ *
+ * <p>v1.1.5 起会员 Cookie 统一由服务端持有：客户端不再读取任何 Cookie 文件，
+ * VIP 歌曲的播放地址由服务端解析后下发。
  *
  * <p>支持三种投放方式，按优先级依次尝试：
  * <ol>
@@ -27,8 +30,7 @@ import java.util.Map;
  */
 public class CookieManager {
    /** 浏览器导出文件的推荐落点（与用户下载文件名一致，直接复制即可） */
-   private static final Path EXPORT_FILE = Path.of("SimpMusic", "163cookie.json");
-   private static final Path COOKIE_FILE = Path.of("SimpMusic", "cookie.json");
+   private static final Path EXPORT_FILE = Path.of("SimpMusic", "163cookie.json");   private static final Path COOKIE_FILE = Path.of("SimpMusic", "cookie.json");
 
    /** 参与请求的网易云相关域名 */
    private static final String[] NETEASE_DOMAINS = {"music.163.com", ".music.163.com", ".163.com", "163.com"};

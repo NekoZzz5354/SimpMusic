@@ -6,9 +6,9 @@
   "description": "全服点歌插件 - 网易云音乐集成 (服务端) | 可选兼容 MTR 1.20.4-3.2.2-hotfix-1",
   "authors": ["NekoZzz5354"],
   "contact": {
-    "issues": "https://github.com/NekoZzz5354/MTRMusic/issues",
-    "sources": "https://github.com/NekoZzz5354/MTRMusic",
-    "homepage": "https://github.com/NekoZzz5354/MTRMusic"
+    "issues": "https://github.com/NekoZzz5354/SimpMusic/issues",
+    "sources": "https://github.com/NekoZzz5354/SimpMusic",
+    "homepage": "https://github.com/NekoZzz5354/SimpMusic"
   },
   "license": "MIT",
   "environment": "server",

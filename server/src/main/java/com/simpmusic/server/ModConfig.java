@@ -26,10 +26,11 @@ public class ModConfig {
    private static String prefix = "§d[SimpMusic]§r";
    private static boolean updateCheckerEnabled = true;
    private static String updateApiUrl = "https://api.github.com";
-   private static String updateRepoPath = "NekoZzz5354/MTRMusic";
+   private static String updateRepoPath = "NekoZzz5354/SimpMusic";
    private static String updateToken = "";
    private static boolean updateNotifyOpsOnly = true;
    private static boolean updateNotifyOnJoin = true;
+   /** 更新检查间隔，单位分钟 */
    private static int updateCheckIntervalMinutes = 360;
    private static boolean mtrCompatible = false;
    private static String mtrVersion = "";
@@ -195,10 +196,14 @@ public class ModConfig {
          json.addProperty("update_token", updateToken);
          json.addProperty("updateNotifyOpsOnly", updateNotifyOpsOnly);
          json.addProperty("updateNotifyOnJoin", updateNotifyOnJoin);
+         // 更新检查间隔（分钟）：每隔多少分钟向 GitHub 查询一次新版本，最小 1
          json.addProperty("updateCheckIntervalMinutes", updateCheckIntervalMinutes);
          json.addProperty("preferredSoundCategory", preferredSoundCategory);
          json.addProperty("queueTickDelay", queueTickDelay);
          json.addProperty("_comment", "Edit values below. Backup auto-saved to config-server.json.bak");
+         json.addProperty("_comment_updateCheckIntervalMinutes", "更新检查间隔，单位为分钟（每隔多少分钟检查一次新版本，最小 1）");
+         json.addProperty("_comment_update_repo_path", "更新检测指向的 GitHub 仓库，格式 owner/repo");
+         json.addProperty("_comment_netease_cookie", "网易云 VIP Cookie 仅需配置服务端：把浏览器导出的 163cookie.json 放到 SimpMusic/163cookie.json");
          Files.writeString(CONFIG_FILE, GSON.toJson(json), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
       } catch (IOException e) {
          SimpMusicServer.LOGGER.error("Failed to save config", e);
@@ -267,7 +272,7 @@ public class ModConfig {
    }
 
    public static String getUpdateRepoPath() {
-      return updateRepoPath != null ? updateRepoPath : "NekoZzz5354/MTRMusic";
+      return updateRepoPath != null ? updateRepoPath : "NekoZzz5354/SimpMusic";
    }
 
    public static String getUpdateToken() {
@@ -283,6 +288,7 @@ public class ModConfig {
    }
 
    public static int getUpdateCheckInterval() {
+      // 最小 1 分钟，避免设置为 0 导致每次 tick 都发请求
       return Math.max(1, updateCheckIntervalMinutes);
    }
 
@@ -358,7 +364,7 @@ public class ModConfig {
    }
 
    public static void setUpdateRepoPath(String path) {
-      updateRepoPath = path != null ? path : "NekoZzz5354/MTRMusic";
+      updateRepoPath = path != null ? path : "NekoZzz5354/SimpMusic";
       save();
    }
 
