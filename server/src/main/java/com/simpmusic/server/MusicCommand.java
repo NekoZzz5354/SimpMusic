@@ -8,6 +8,7 @@ import com.simpmusic.server.update.UpdateChecker;
 import java.util.List;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.ClickEvent;
 import net.minecraft.text.HoverEvent;
@@ -33,9 +34,11 @@ public class MusicCommand {
                                                                   return 0;
                                                                }
 
+                                                               // 搜索结果也回到主线程再发消息，避免在网络线程操作玩家实体
+                                                               final MinecraftServer searchSrv = ((ServerCommandSource)ctx.getSource()).getServer();
                                                                NeteaseApiClient.searchAsync(
                                                                   kw,
-                                                                  results -> {
+                                                                  results -> searchSrv.execute(() -> {
                                                                      if (results.isEmpty()) {
                                                                         player.sendMessage(
                                                                            Text.literal(ModConfig.getPrefix() + " §c未找到歌曲: " + kw).formatted(Formatting.RED),
@@ -77,7 +80,7 @@ public class MusicCommand {
                                                                         }
                                                                      }
                                                                   }
-                                                               );
+                                                               ));
                                                                return 1;
                                                             }
                                                          )
@@ -107,9 +110,11 @@ public class MusicCommand {
                                                                      return 0;
                                                                   }
 
+                                                                  // 点歌链路的结果回调统一切回服务端主线程：队列状态只允许在主线程改动
+                                                                  final MinecraftServer srv = ((ServerCommandSource)ctx.getSource()).getServer();
                                                                   NeteaseApiClient.getSongUrlAsync(
                                                                      id,
-                                                                     url -> {
+                                                                     url -> srv.execute(() -> {
                                                                         if (url == null) {
                                                                            player.sendMessage(
                                                                               Text.literal(ModConfig.getPrefix() + " §c无法获取歌曲播放链接（可能是VIP歌曲）")
@@ -119,7 +124,7 @@ public class MusicCommand {
                                                                         } else {
                                                                            NeteaseApiClient.getSongInfoAsync(
                                                                               id,
-                                                                              info -> {
+                                                                              info -> srv.execute(() -> {
                                                                                  String artist = info != null && info.artist != null ? info.artist : "Unknown";
                                                                                  String album = info != null && info.album != null ? info.album : "";
                                                                                  String coverUrl = info != null && info.coverUrl != null ? info.coverUrl : "";
@@ -138,24 +143,16 @@ public class MusicCommand {
                                                                                        )
                                                                                     );
 
-                                                                                    for (ServerPlayerEntity p : ((ServerCommandSource)ctx.getSource())
-                                                                                       .getServer()
-                                                                                       .getPlayerManager()
-                                                                                       .getPlayerList()) {
+                                                                                    for (ServerPlayerEntity p : srv.getPlayerManager().getPlayerList()) {
                                                                                        p.sendMessage(notify, true);
                                                                                     }
-                                                                                 } else {
-                                                                                    player.sendMessage(
-                                                                                       Text.literal(ModConfig.getPrefix() + " §c点歌失败: 队列已满或已达上限")
-                                                                                          .formatted(Formatting.RED),
-                                                                                       false
-                                                                                    );
                                                                                  }
+                                                                                 // 失败原因已由 addToQueue 通过聊天栏 + actionbar 明确提示，此处不再重复
                                                                               }
-                                                                           );
+                                                                           ));
                                                                         }
                                                                      }
-                                                                  );
+                                                                  ));
                                                                   return 1;
                                                                }
                                                             )

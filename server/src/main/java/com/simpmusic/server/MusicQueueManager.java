@@ -62,6 +62,11 @@ public class MusicQueueManager {
             if (tickCounter % 5 == 0) {
                checkCurrentSongTimeout();
             }
+
+            // 看门狗：队列里有歌却没有在播（状态错乱/异常导致卡死）时自动推进，杜绝「点歌没反应」
+            if (tickCounter % 20 == 0) {
+               ensureQueueProgress();
+            }
          }
       });
       ServerPlayConnectionEvents.JOIN.register((Join)(handler, sender, srv) -> {
@@ -103,6 +108,30 @@ public class MusicQueueManager {
       server = s;
    }
 
+   /** 当前是否运行在服务端主线程（队列状态只允许在主线程改动） */
+   private static boolean onServerThread() {
+      MinecraftServer s = server;
+      return s == null || s.isOnThread();
+   }
+
+   /**
+    * 把任务切回服务端主线程执行。
+    *
+    * <p>点歌链路（{@code /music request} → 异步 HTTP 回调）原先直接在
+    * {@code ForkJoinPool} 线程里调用 {@link #addToQueue}/{@link #playNext}，
+    * 与 tick 线程并发改动 {@code currentPlaying}/{@code queue}——
+    * 连续点歌时会出现「两首歌被同时 poll」「currentPlaying 被覆盖」等状态错乱，
+    * 表现为点过几首歌后再点歌没有任何反应。这里统一收敛到主线程。
+    */
+   private static void dispatch(Runnable task) {
+      MinecraftServer s = server;
+      if (s != null) {
+         s.execute(task);
+      } else {
+         task.run();
+      }
+   }
+
    public static void setTickDelay(int delay) {
       tickDelay = Math.max(0, delay);
       SimpMusicServer.LOGGER.info("Queue tick delay set to {} ticks", tickDelay);
@@ -111,55 +140,91 @@ public class MusicQueueManager {
    public static boolean addToQueue(
       String songId, String title, String artist, String album, String coverUrl, String url, int duration, ServerPlayerEntity requester
    ) {
+      if (!onServerThread()) {
+         // 兜底：异步回调误在主线程外调用时切回主线程，避免与 tick 线程并发改队列
+         final String fSongId = songId;
+         final String fTitle = title;
+         final String fArtist = artist;
+         final String fAlbum = album;
+         final String fCover = coverUrl;
+         final String fUrl = url;
+         final int fDuration = duration;
+         final ServerPlayerEntity fPlayer = requester;
+         SimpMusicServer.LOGGER.debug("addToQueue dispatched to server thread (caller was off-thread)");
+         dispatch(() -> addToQueue(fSongId, fTitle, fArtist, fAlbum, fCover, fUrl, fDuration, fPlayer));
+         return true;
+      }
+
+      title = TextUtil.sanitize(title);
+      artist = TextUtil.sanitize(artist);
+      album = album != null ? TextUtil.sanitize(album) : "";
+      if (title.isEmpty()) {
+         reject(requester, "无效的歌曲标题");
+         return false;
+      }
+
+      if (url == null || url.isEmpty()) {
+         reject(requester, "无法获取该歌曲的播放链接（可能是 VIP 歌曲，请在服务端配置网易云 Cookie）");
+         return false;
+      }
+
       if (!checkCooldown(requester)) {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c请等待 " + ModConfig.getRequestCooldown() + " 秒后再点歌").formatted(Formatting.RED), false);
+         reject(requester, "请等待 " + ModConfig.getRequestCooldown() + " 秒后再点歌");
          return false;
       }
 
       if (queue.size() >= ModConfig.getMaxTotalQueue()) {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c队列已满，请稍后再试").formatted(Formatting.RED), false);
+         reject(requester, "队列已满，请稍后再试");
          return false;
       }
 
       if (!ModConfig.isAllowDuplicates()) {
          for (MusicQueueManager.MusicEntry e : queue) {
             if (e.songId.equals(songId)) {
-               requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c该歌曲已在队列中").formatted(Formatting.RED), false);
+               reject(requester, "该歌曲已在队列中");
                return false;
             }
          }
 
          if (currentPlaying != null && currentPlaying.songId.equals(songId)) {
-            requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c该歌曲正在播放中").formatted(Formatting.RED), false);
+            reject(requester, "该歌曲正在播放中");
             return false;
          }
       }
 
+      // 每名玩家的上限同时计入「队列中」与「正在播放」的曲目，避免播放中的那首被漏算
       long playerCount = queue.stream().filter(ex -> ex.requesterUuid.equals(requester.getUuid())).count();
+      if (currentPlaying != null && currentPlaying.requesterUuid.equals(requester.getUuid())) {
+         playerCount++;
+      }
+
       if (playerCount >= ModConfig.getMaxQueuePerPlayer()) {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c你已点歌过多，请等待播放").formatted(Formatting.RED), false);
+         reject(requester, "你已点歌 " + playerCount + " 首（上限 " + ModConfig.getMaxQueuePerPlayer() + "），请等待播放");
          return false;
       }
 
-      title = TextUtil.sanitize(title);
-      artist = TextUtil.sanitize(artist);
-      if (title.isEmpty()) {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c无效的歌曲标题").formatted(Formatting.RED), false);
-         return false;
-      }
+      queue.add(new MusicQueueManager.MusicEntry(songId, title, artist, album, coverUrl, url, duration, requester));
+      setCooldown(requester);
+      SimpMusicServer.LOGGER.info(
+         "Queued by {}: {} - {} (queue={}, playing={})",
+         requester.getName().getString(), title, artist, queue.size(), currentPlaying != null ? currentPlaying.title : "none"
+      );
 
-      if (url != null && !url.isEmpty()) {
-         queue.add(new MusicQueueManager.MusicEntry(songId, title, artist, album, coverUrl, url, duration, requester));
-         setCooldown(requester);
-         if (currentPlaying == null) {
-            playNext();
-         }
-
-         return true;
+      if (currentPlaying == null) {
+         playNext();
       } else {
-         requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c无法获取该歌曲的播放链接（可能是 VIP 歌曲，请在服务端配置网易云 Cookie）").formatted(Formatting.RED), false);
-         return false;
+         broadcastQueueSync();
       }
+
+      return true;
+   }
+
+   /** 统一的点歌拒绝反馈：聊天栏 + actionbar 双通道，避免玩家误以为「点了没反应」 */
+   private static void reject(ServerPlayerEntity player, String reason) {
+      SimpMusicServer.LOGGER.info("Request rejected for {}: {}", player.getName().getString(), reason);
+      Text msg = Text.literal(ModConfig.getPrefix() + " §c" + reason);
+      player.sendMessage(msg, false);
+      player.sendMessage(msg, true);
    }
 
    public static MusicQueueManager.MusicEntry getCurrentPlaying() {
@@ -171,18 +236,24 @@ public class MusicQueueManager {
    }
 
    public static void skipCurrent() {
+      if (!onServerThread()) {
+         dispatch(MusicQueueManager::skipCurrent);
+         return;
+      }
+
       SimpMusicServer.LOGGER.info("Skipping current song: {}", currentPlaying != null ? currentPlaying.title : "null");
       currentPlaying = null;
       clearLyrics();
       broadcastStop();
-      if (server != null) {
-         server.execute(() -> playNext());
-      } else {
-         playNext();
-      }
+      playNext();
    }
 
    public static void playNext() {
+      if (!onServerThread()) {
+         dispatch(MusicQueueManager::playNext);
+         return;
+      }
+
       currentPlaying = queue.poll();
       if (currentPlaying != null && server != null) {
          SimpMusicServer.LOGGER.info("Playing next: {} - {}", currentPlaying.title, currentPlaying.artist);
@@ -228,6 +299,12 @@ public class MusicQueueManager {
     * 每名玩家对当前曲目只能投一票；换歌后自动清空。
     */
    public static void voteSkip(ServerPlayerEntity player) {
+      if (!onServerThread()) {
+         final ServerPlayerEntity p = player;
+         dispatch(() -> voteSkip(p));
+         return;
+      }
+
       if (currentPlaying == null) {
          player.sendMessage(Text.literal(ModConfig.getPrefix() + " §7当前没有正在播放的歌曲").formatted(Formatting.GRAY), false);
          return;
@@ -290,6 +367,11 @@ public class MusicQueueManager {
    }
 
    public static void stopAll() {
+      if (!onServerThread()) {
+         dispatch(MusicQueueManager::stopAll);
+         return;
+      }
+
       currentPlaying = null;
       queue.clear();
       requestCooldowns.clear();
@@ -374,7 +456,11 @@ public class MusicQueueManager {
          payload.add(new LyricsPacket.Line(l.timeMs, l.text, l.translation));
       }
 
-      LyricsPacket.send(player, lyricsSongId, payload);
+      try {
+         LyricsPacket.send(player, lyricsSongId, payload);
+      } catch (Exception e) {
+         SimpMusicServer.LOGGER.warn("Send lyrics to {} failed: {}", player.getName().getString(), e.getMessage());
+      }
    }
 
    private static void broadcastLyrics() {
@@ -526,19 +612,24 @@ public class MusicQueueManager {
    private static void broadcastPlay(MusicQueueManager.MusicEntry entry) {
       if (server != null) {
          for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            String urlWithVolume = appendVolumeParam(entry.url);
-            PlaySongPacket.send(
-               player,
-               entry.songId,
-               entry.title,
-               entry.artist,
-               urlWithVolume,
-               entry.coverUrl,
-               entry.album,
-               entry.requesterName,
-               entry.duration,
-               0
-            );
+            try {
+               String urlWithVolume = appendVolumeParam(entry.url);
+               PlaySongPacket.send(
+                  player,
+                  entry.songId,
+                  entry.title,
+                  entry.artist,
+                  urlWithVolume,
+                  entry.coverUrl,
+                  entry.album,
+                  entry.requesterName,
+                  entry.duration,
+                  0
+               );
+            } catch (Exception e) {
+               // 单个玩家发包失败不应中断整个队列
+               SimpMusicServer.LOGGER.warn("Send play packet to {} failed: {}", player.getName().getString(), e.getMessage());
+            }
          }
 
          Text notify = Text.literal(String.format("%s §a♪ 正在播放: §b%s §7- %s", ModConfig.getPrefix(), entry.title, entry.artist));
@@ -552,7 +643,11 @@ public class MusicQueueManager {
    private static void broadcastStop() {
       if (server != null) {
          for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            StopSongPacket.send(player);
+            try {
+               StopSongPacket.send(player);
+            } catch (Exception e) {
+               SimpMusicServer.LOGGER.warn("Send stop packet to {} failed: {}", player.getName().getString(), e.getMessage());
+            }
          }
       }
    }
@@ -560,7 +655,11 @@ public class MusicQueueManager {
    private static void broadcastQueueSync() {
       if (server != null) {
          for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            SyncQueuePacket.send(player, getQueueAsList(), currentPlaying);
+            try {
+               SyncQueuePacket.send(player, getQueueAsList(), currentPlaying);
+            } catch (Exception e) {
+               SimpMusicServer.LOGGER.warn("Send queue sync to {} failed: {}", player.getName().getString(), e.getMessage());
+            }
          }
       }
    }
@@ -573,6 +672,23 @@ public class MusicQueueManager {
 
    private static void setCooldown(ServerPlayerEntity player) {
       requestCooldowns.put(player.getUuid(), System.currentTimeMillis());
+   }
+
+   /**
+    * 队列看门狗：若队列非空却没有任何歌曲在播（此前并发改队列或广播异常都可能造成这种「卡死」），
+    * 主动推进队列。保证「点了歌之后一定会有歌在放」。
+    */
+   private static void ensureQueueProgress() {
+      if (server == null) {
+         return;
+      }
+
+      if (currentPlaying == null && !queue.isEmpty()) {
+         SimpMusicServer.LOGGER.warn(
+            "Queue stalled with {} pending song(s) — advancing automatically", queue.size()
+         );
+         playNext();
+      }
    }
 
    private static void checkCurrentSongTimeout() {

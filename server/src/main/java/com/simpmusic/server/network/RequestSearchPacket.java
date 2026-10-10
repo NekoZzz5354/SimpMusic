@@ -17,6 +17,7 @@ public record RequestSearchPacket(String keyword) {
    ) {
       String keyword = buf.readString();
       SimpMusicServer.LOGGER.debug("Player {} searching: {}", player.getName().getString(), keyword);
-      NeteaseApiClient.searchAsync(keyword, songs -> SearchResultPacket.send(player, songs));
+      // 搜索结果回调在网络线程，发包前切回服务端主线程
+      NeteaseApiClient.searchAsync(keyword, songs -> server.execute(() -> SearchResultPacket.send(player, songs)));
    }
 }

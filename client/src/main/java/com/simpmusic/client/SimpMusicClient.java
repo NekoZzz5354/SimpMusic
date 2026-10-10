@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory;
 public class SimpMusicClient implements ClientModInitializer {
    public static final String MOD_ID = "simpmusic";
    public static final String MOD_NAME = "SimpMusic";
-   public static final String VERSION = "1.2.0";
+   public static final String VERSION = "1.2.1";
    public static final Logger LOGGER = LoggerFactory.getLogger("SimpMusic");
    private static KeyBinding openMusicScreenKey;
    private static boolean isPlaying = false;

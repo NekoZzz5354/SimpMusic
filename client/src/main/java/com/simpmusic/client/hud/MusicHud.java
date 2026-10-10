@@ -24,15 +24,15 @@ import net.minecraft.util.Identifier;
  * │  专辑                            │ 1 : 1 │ │
  * │  01:23 / 04:00  点歌: xxx        └───────┘ │
  * │  ─────────────────────────────────────────  │
- * │  ♪ 当前歌词行                                │
- * │    歌词翻译（外语歌并列展示）                 │
+ * │  ♪ 当前歌词行（过长自动横向滑动）             │
+ * │    歌词翻译（外语歌并列展示，同样会滑动）      │
  * │    下一句（暗色预览）                        │
  * │  ▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
  * └───────────────────────────────────────────┘
  * </pre>
  *
- * <p>封面固定为 1:1 正方形，曲名/曲师/专辑/时长信息排在封面左侧，歌词与译文在下方。
- * 歌词行由服务端解析后整体下发，客户端只按本地播放进度取行，避免两端解析差异。
+ * <p>v1.2.1：歌词行过长时改为**横向滑动（marquee）**展示，并用剪刀裁剪到歌词区内，
+ * 不再被直接截断或在面板外溢出。
  */
 public final class MusicHud {
    private static final int PAD = 6;
@@ -40,6 +40,10 @@ public final class MusicHud {
    private static final int GAP = 8;
    private static final int LINE_H = 10;
    private static final int TEXT_MAX_W = 150;
+
+   /** 歌词滚动速度（GUI 单位 / 秒）与循环间隔 */
+   private static final double MARQUEE_SPEED = 22.0;
+   private static final int MARQUEE_GAP = 28;
 
    private static final int COL_BG = 0xC00E0A1A;
    private static final int COL_BORDER = 0x66B06CFF;
@@ -53,6 +57,7 @@ public final class MusicHud {
    private static final int COL_PLACEHOLDER = 0xFF86869C;
    private static final int COL_BAR_BG = 0xFF2A2A3E;
    private static final int COL_BAR_FG = 0xFFB06CFF;
+   private static final int COL_COVER_BG = 0xFF23233A;
 
    private static volatile boolean active = false;
    private static volatile String songId = "";
@@ -201,6 +206,7 @@ public final class MusicHud {
       int lyricsH = lyricRows * LINE_H;
       int barY = lyricsTop + lyricsH + 4;
       int panelH = barY + 3 + PAD - y0;
+      int lyricMaxW = panelW - PAD * 2;
 
       MatrixStack matrices = context.getMatrices();
       matrices.push();
@@ -240,22 +246,21 @@ public final class MusicHud {
       // ---- 右侧 1:1 封面 ----
       drawCover(context, tr, coverX, y0 + PAD);
 
-      // ---- 下方歌词（原文 + 翻译 + 下一句）----
+      // ---- 下方歌词：过长自动横向滑动，并裁剪在歌词区内 ----
       int ly = lyricsTop;
-      int lyricMaxW = panelW - PAD * 2;
 
       if (hasCur) {
-         context.drawTextWithShadow(tr, tr.trimToWidth("♪ " + curText, lyricMaxW), x0 + PAD, ly, COL_LYRIC);
+         drawScrolling(context, tr, scale, "♪ " + curText, x0 + PAD, ly, lyricMaxW, now, COL_LYRIC);
          ly += LINE_H;
       }
 
       if (hasTrans) {
-         context.drawTextWithShadow(tr, tr.trimToWidth(curTrans, lyricMaxW), x0 + PAD, ly, COL_TRANS);
+         drawScrolling(context, tr, scale, curTrans, x0 + PAD, ly, lyricMaxW, now, COL_TRANS);
          ly += LINE_H;
       }
 
       if (hasNext) {
-         context.drawTextWithShadow(tr, tr.trimToWidth(nextText, lyricMaxW), x0 + PAD, ly, COL_NEXT);
+         drawScrolling(context, tr, scale, nextText, x0 + PAD, ly, lyricMaxW, now, COL_NEXT);
          ly += LINE_H;
       }
 
@@ -279,11 +284,46 @@ public final class MusicHud {
       matrices.pop();
    }
 
+   /**
+    * 绘制一行歌词：宽度不超过可用宽度时正常绘制；
+    * 超过时以跑马灯方式横向循环滑动，并用剪刀限制在歌词区内，
+    * 避免文字溢出面板或被硬截断而看不全。
+    */
+   private static void drawScrolling(
+      DrawContext context, TextRenderer tr, float scale, String text, int x, int y, int availW, long now, int color
+   ) {
+      if (text == null || text.isEmpty() || availW <= 0) {
+         return;
+      }
+
+      int textW = tr.getWidth(text);
+
+      if (textW <= availW) {
+         context.drawTextWithShadow(tr, text, x, y, color);
+         return;
+      }
+
+      // 首尾相接循环：总长 = 文本宽 + 间隔
+      int total = textW + MARQUEE_GAP;
+      int offset = (int)((now / 1000.0 * MARQUEE_SPEED) % total);
+
+      // 剪刀坐标位于 GUI 空间，不含本 HUD 自身的缩放，需要手动乘上 scale
+      int clipX1 = (int)Math.floor(x * scale);
+      int clipY1 = (int)Math.floor(y * scale);
+      int clipX2 = (int)Math.ceil((x + availW) * scale);
+      int clipY2 = (int)Math.ceil((y + LINE_H) * scale);
+
+      context.enableScissor(clipX1, clipY1, clipX2, clipY2);
+      context.drawTextWithShadow(tr, text, x - offset, y, color);
+      context.drawTextWithShadow(tr, text, x - offset + total, y, color);
+      context.disableScissor();
+   }
+
    /** 绘制 1:1 封面：非正方形时按中心裁切，无纹理时画占位块 */
    private static void drawCover(DrawContext context, TextRenderer tr, int coverX, int coverY) {
       Identifier texture = CoverTexture.getId();
 
-      if (texture != null) {
+      if (texture != null && CoverTexture.hasImage()) {
          int w = CoverTexture.getWidth();
          int h = CoverTexture.getHeight();
          int side = Math.min(w, h);
@@ -295,7 +335,7 @@ public final class MusicHud {
          context.drawTexture(texture, coverX, coverY, COVER, COVER, u, v, side, side, Math.max(1, w), Math.max(1, h));
          RenderSystem.disableBlend();
       } else {
-         context.fill(coverX, coverY, coverX + COVER, coverY + COVER, 0xFF23233A);
+         context.fill(coverX, coverY, coverX + COVER, coverY + COVER, COL_COVER_BG);
          context.drawTextWithShadow(tr, "♪", coverX + COVER / 2 - 3, coverY + COVER / 2 - 4, 0x66FFFFFF);
       }
 
@@ -317,7 +357,9 @@ public final class MusicHud {
          return "HUD 未激活";
       }
 
-      return String.format("HUD: %s - %s | 歌词 %d 行 | 封面 %s", title, artist, lines.size(), CoverTexture.getId() != null ? "已就绪" : "未加载");
+      return String.format(
+         "HUD: %s - %s | 歌词 %d 行 | 封面 %s",
+         title, artist, lines.size(), CoverTexture.hasImage() ? "已就绪" : "未加载"
+      );
    }
-
 }
