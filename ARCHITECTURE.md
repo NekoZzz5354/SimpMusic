@@ -8,7 +8,7 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 
 ```
 ┌───────────── 服务端 (SimpMusic-Server) ─────────────┐
-│ /music 命令树 · 队列状态机 · 网易云 API · BossBar  │
+│ /music 命令树 · 队列状态机 · 网易云 API · 歌词下发  │
 │            歌词同步 · 更新检测 · Cookie            │
 └──────────────────────┬─────────────────────────────┘
                        │ Fabric 网络包 (play_song / stop_song /
@@ -29,7 +29,7 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 |----|------|
 | `SimpMusicServer` | 入口：注册命令/网络包/生命周期事件；MTR 检测与 3.2.2 兼容补丁（tickDelay=2、MASTER 音效类） |
 | `MusicCommand` | `/music` 命令树：search / request / queue / list / skip / stop / remove / update / api / reload / status / help（skip/stop/remove/update/api/reload 需 OP 2 级） |
-| `MusicQueueManager` | **核心状态机**：`ConcurrentLinkedQueue` 队列、当前播放项、每玩家冷却、BossBar 进度+逐行歌词、时长+3s 超时自动切歌 |
+| `MusicQueueManager` | **核心状态机**：`ConcurrentLinkedQueue` 队列、当前播放项、每玩家冷却、歌词抓取与解析下发、时长+3s 超时自动切歌 |
 | `NeteaseApiClient` | 网易云 API 网关：search / getSongUrl / getSongInfo / getLyric；双模式（官方 music.163.com ↔ 自建 NeteaseCloudMusicApi） |
 | `ModConfig` | `SimpMusic/config-server.json`：camelCase/snake_case 兼容读取、损坏自动备份 .bak、修改即存 |
 | `CookieManager` | `SimpMusic/cookie.json`：网易云 Cookie（JSON 或纯文本），填后可播 VIP |
@@ -39,9 +39,9 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 
 ### 服务端关键状态机（MusicQueueManager）
 - 入队校验链：冷却 → 队列满（50）→ 重复（默认禁）→ 每玩家上限（5）→ 标题合法性 → URL 有效性
-- `playNext()`：弹队列 → 广播 PlaySongPacket → BossBar 建立 → 异步加载 LRC 歌词
-- tick 驱动（`END_SERVER_TICK`）：每 5 tick 更新 BossBar 进度 + 超时检测；MTR 模式降到每 2 tick
-- 玩家中途 JOIN → BossBar 自动补挂
+- `playNext()`：弹队列 → 广播 PlaySongPacket（含封面/专辑/时长）→ 异步加载并广播歌词包
+- tick 驱动（`END_SERVER_TICK`）：每 5 tick 做超时检测（进度/歌词渲染由客户端 HUD 负责）；MTR 模式降到每 2 tick
+- 玩家中途 JOIN → 补发 PlaySongPacket 与已加载歌词
 
 ### 网络包协议（Fabric Custom Payload，id 前缀 `simpmusic:`）
 
@@ -108,15 +108,15 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 客户端收到 play_song → MusicAudioStream.play()
   → 下载 → isAudioData 校验 → mp3spi 解码 PCM → 独立 OpenAL 播放
   → actionbar 提示"正在播放"
-同时服务端：BossBar 显示歌名+歌词进度，异步加载 LRC 实时滚动
-播完（时长+3s）→ skipCurrent → playNext；队列空 → BossBar 隐藏
+同时服务端：下发歌词包；客户端 HUD 在屏幕左上角渲染封面+曲目信息+歌词（含翻译）
+播完（时长+3s）→ skipCurrent → playNext；队列空 → HUD 隐藏
 ```
 
 ## 五、配置与文件
 
 | 文件 | 位置 | 说明 |
 |------|------|------|
-| `config-server.json` | 游戏根目录 `SimpMusic/` | 服务端：API 地址、码率(320k)、BossBar、队列上限、音量、更新检测 |
+| `config-server.json` | 游戏根目录 `SimpMusic/` | 服务端：API 地址、码率(320k)、歌曲 HUD、队列上限、音量、更新检测 |
 | `config-client.json` | 同上 | 客户端：音量倍率、缓冲、音效类、更新 |
 | `cookie.json` | 同上 | 网易云 Cookie（VIP 播放） |
 

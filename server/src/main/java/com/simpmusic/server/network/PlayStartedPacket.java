@@ -12,7 +12,7 @@ import net.minecraft.util.Identifier;
 
 /**
  * 客户端→服务端：告知"本端已实际开始播放"。
- * 用于校准服务端 BossBar 歌词/进度计时（客户端下载+解码存在数秒延迟，
+ * 用于校准服务端歌词/进度计时（客户端下载+解码存在数秒延迟，
  * 若以广播时刻起算，歌词会领先音乐）。
  */
 public record PlayStartedPacket(String songId) {

@@ -17,7 +17,8 @@ public class ModConfig {
    private static final Path CONFIG_BACKUP = CONFIG_DIR.resolve("config-server.json.bak");
    private static String apiBaseUrl = "https://music.163.com";
    private static int defaultBitrate = 320000;
-   private static boolean showBossBar = true;
+   /** 是否向客户端下发歌曲信息 HUD（左上角卡片：封面 + 曲目信息 + 歌词/翻译） */
+   private static boolean showMusicHud = true;
    private static int maxQueuePerPlayer = 5;
    private static int maxTotalQueue = 50;
    private static boolean allowDuplicates = false;
@@ -71,8 +72,11 @@ public class ModConfig {
             }
          }
 
-         if (json.has("show_boss_bar")) {
-            showBossBar = json.get("show_boss_bar").getAsBoolean();
+         if (json.has("show_music_hud")) {
+            showMusicHud = json.get("show_music_hud").getAsBoolean();
+         } else if (json.has("show_boss_bar")) {
+            // 兼容 v1.1.x 旧配置键：原 BossBar 开关语义迁移为 HUD 开关
+            showMusicHud = json.get("show_boss_bar").getAsBoolean();
          }
 
          if (json.has("maxQueuePerPlayer")) {
@@ -183,7 +187,7 @@ public class ModConfig {
          JsonObject json = new JsonObject();
          json.addProperty("apiBaseUrl", apiBaseUrl);
          json.addProperty("defaultBitrate", defaultBitrate);
-         json.addProperty("show_boss_bar", showBossBar);
+         json.addProperty("show_music_hud", showMusicHud);
          json.addProperty("maxQueuePerPlayer", maxQueuePerPlayer);
          json.addProperty("maxTotalQueue", maxTotalQueue);
          json.addProperty("allowDuplicates", allowDuplicates);
@@ -204,6 +208,7 @@ public class ModConfig {
          json.addProperty("_comment_updateCheckIntervalMinutes", "更新检查间隔，单位为分钟（每隔多少分钟检查一次新版本，最小 1）");
          json.addProperty("_comment_update_repo_path", "更新检测指向的 GitHub 仓库，格式 owner/repo");
          json.addProperty("_comment_netease_cookie", "网易云 VIP Cookie 仅需配置服务端：把浏览器导出的 163cookie.json 放到 SimpMusic/163cookie.json");
+         json.addProperty("_comment_show_music_hud", "是否下发歌曲信息 HUD（客户端屏幕左上角：封面 + 曲名/曲师/专辑 + 歌词与翻译）");
          Files.writeString(CONFIG_FILE, GSON.toJson(json), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
       } catch (IOException e) {
          SimpMusicServer.LOGGER.error("Failed to save config", e);
@@ -235,8 +240,8 @@ public class ModConfig {
       return CookieManager.getNeteaseCookie();
    }
 
-   public static boolean isShowBossBar() {
-      return showBossBar;
+   public static boolean isShowMusicHud() {
+      return showMusicHud;
    }
 
    public static int getMaxQueuePerPlayer() {
@@ -318,8 +323,8 @@ public class ModConfig {
       save();
    }
 
-   public static void setShowBossBar(boolean b) {
-      showBossBar = b;
+   public static void setShowMusicHud(boolean b) {
+      showMusicHud = b;
       save();
    }
 

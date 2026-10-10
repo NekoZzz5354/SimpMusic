@@ -3,6 +3,7 @@ package com.simpmusic.client.audio;
 import com.simpmusic.client.ClientConfig;
 import com.simpmusic.client.SimpMusicClient;
 import com.simpmusic.client.NeteaseApiClient;
+import com.simpmusic.client.hud.MusicHud;
 import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -199,12 +200,14 @@ public class MusicAudioStream {
                   playPcmLineFallback(decoded.pcmStream, decoded.pcmFormat, volume, title, artist);
                }
 
-               // 实际开始播放后通知服务端校准 BossBar 计时（歌词同步）
+               // 实际开始播放后：校准服务端计时，并让 HUD 按真实出声时刻对齐歌词/进度
                sendPlayStarted(songId, startOffsetSeconds);
+               MusicHud.onPlaybackStarted(songId, startOffsetSeconds);
             } catch (Exception e) {
                SimpMusicClient.LOGGER.error("OpenAL playback failed, fallback: {}", e.getMessage());
                playPcmLineFallback(decoded.pcmStream, decoded.pcmFormat, volume, title, artist);
                sendPlayStarted(songId, startOffsetSeconds);
+               MusicHud.onPlaybackStarted(songId, startOffsetSeconds);
             }
          }
       }));
@@ -347,6 +350,7 @@ public class MusicAudioStream {
                if (alBufferQueue.isEmpty() && streamEofConsumed) {
                   SimpMusicClient.LOGGER.info("Playback finished (all data consumed)");
                   cleanupDirect();
+                  MusicHud.endSong();
                   return;
                }
 

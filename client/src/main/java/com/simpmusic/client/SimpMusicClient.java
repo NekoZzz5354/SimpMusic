@@ -3,6 +3,7 @@ package com.simpmusic.client;
 import com.simpmusic.client.audio.MusicAudioStream;
 import com.simpmusic.client.command.ClientMusicCommand;
 import com.simpmusic.client.gui.MusicScreen;
+import com.simpmusic.client.hud.MusicHud;
 import com.simpmusic.client.network.ClientNetworkHandler;
 import com.simpmusic.client.update.UpdateChecker;
 import java.util.Optional;
@@ -14,6 +15,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.EndTic
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.Join;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.minecraft.client.MinecraftClient;
@@ -26,7 +28,7 @@ import org.slf4j.LoggerFactory;
 public class SimpMusicClient implements ClientModInitializer {
    public static final String MOD_ID = "simpmusic";
    public static final String MOD_NAME = "SimpMusic";
-   public static final String VERSION = "1.1.5";
+   public static final String VERSION = "1.2.0";
    public static final Logger LOGGER = LoggerFactory.getLogger("SimpMusic");
    private static KeyBinding openMusicScreenKey;
    private static boolean isPlaying = false;
@@ -76,6 +78,15 @@ public class SimpMusicClient implements ClientModInitializer {
          LOGGER.info("{} v{} (Client) fully started! MTR: {}", new Object[]{"SimpMusic", VERSION, isMTRDetected() ? "YES (" + mtrVersion + ")" : "NO"});
       });
       ClientNetworkHandler.register();
+
+      // 歌曲信息 HUD（屏幕左上角：封面 + 曲目信息 + 歌词/翻译），替代 v1.1.x 的 BossBar 方案
+      try {
+         HudRenderCallback.EVENT.register((context, tickDelta) -> MusicHud.render(context, tickDelta));
+         LOGGER.info("Music HUD renderer registered.");
+      } catch (Exception e) {
+         LOGGER.error("Failed to register music HUD: {}", e.getMessage());
+      }
+
       LOGGER.info("{} v{} (Client) initialized successfully!", "SimpMusic", VERSION);
    }
 

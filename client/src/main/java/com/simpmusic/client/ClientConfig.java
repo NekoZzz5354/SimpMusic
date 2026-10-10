@@ -28,6 +28,10 @@ public class ClientConfig {
    private static int defaultBitrate = 320000;
    private static float volumeMultiplier = 1.0F;
    private static boolean mtrCompatMode = true;
+   /** 是否显示歌曲信息 HUD（屏幕左上角：封面 + 曲目信息 + 歌词/翻译） */
+   private static boolean showMusicHud = true;
+   /** HUD 整体缩放倍率 */
+   private static double musicHudScale = 1.0;
 
    public static void load() {
       try {
@@ -102,6 +106,14 @@ public class ClientConfig {
             mtrCompatMode = json.get("mtr_compat_mode").getAsBoolean();
          }
 
+         if (json.has("show_music_hud")) {
+            showMusicHud = json.get("show_music_hud").getAsBoolean();
+         }
+
+         if (json.has("music_hud_scale")) {
+            musicHudScale = json.get("music_hud_scale").getAsDouble();
+         }
+
          save();
          SimpMusicClient.LOGGER.info("SimpMusic client config loaded (merged with defaults)");
       } catch (Exception e) {
@@ -152,9 +164,13 @@ public class ClientConfig {
          json.addProperty("default_bitrate", defaultBitrate);
          json.addProperty("volume_multiplier", volumeMultiplier);
          json.addProperty("mtr_compat_mode", mtrCompatMode);
+         json.addProperty("show_music_hud", showMusicHud);
+         json.addProperty("music_hud_scale", musicHudScale);
          json.addProperty("_comment", "Edit values below. Backup is auto-saved to config-client.json.bak");
          json.addProperty("_comment_update_interval_minutes", "更新检查间隔，单位为分钟（每隔多少分钟检查一次新版本，最小 1）");
          json.addProperty("_comment_netease_cookie", "网易云 VIP Cookie 仅在服务端配置：把 163cookie.json 放到服务器的 SimpMusic/163cookie.json（客户端无需配置）");
+         json.addProperty("_comment_show_music_hud", "是否显示歌曲信息 HUD（屏幕左上角：封面 + 曲名/曲师/专辑 + 歌词与翻译，替代旧版 BossBar）");
+         json.addProperty("_comment_music_hud_scale", "HUD 整体缩放倍率，范围 0.5 ~ 2.0");
          Files.writeString(CONFIG_FILE, GSON.toJson(json), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
       } catch (IOException e) {
          SimpMusicClient.LOGGER.error("Failed to save client config", e);
@@ -214,6 +230,15 @@ public class ClientConfig {
       return mtrCompatMode;
    }
 
+   public static boolean isShowMusicHud() {
+      return showMusicHud;
+   }
+
+   public static double getMusicHudScale() {
+      // 限幅避免误配出过大/过小界面
+      return Math.max(0.5, Math.min(2.0, musicHudScale));
+   }
+
    public static void setMusicApiUrl(String url) {
       musicApiUrl = url != null ? url : "https://music.163.com";
       save();
@@ -271,6 +296,16 @@ public class ClientConfig {
 
    public static void setMtrCompatMode(boolean e) {
       mtrCompatMode = e;
+      save();
+   }
+
+   public static void setShowMusicHud(boolean e) {
+      showMusicHud = e;
+      save();
+   }
+
+   public static void setMusicHudScale(double s) {
+      musicHudScale = Math.max(0.5, Math.min(2.0, s));
       save();
    }
 

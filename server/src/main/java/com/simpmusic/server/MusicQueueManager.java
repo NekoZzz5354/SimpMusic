@@ -1,5 +1,6 @@
 package com.simpmusic.server;
 
+import com.simpmusic.server.network.LyricsPacket;
 import com.simpmusic.server.network.PlaySongPacket;
 import com.simpmusic.server.network.StopSongPacket;
 import com.simpmusic.server.network.SyncQueuePacket;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.regex.Matcher;
@@ -19,14 +21,22 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.EndTick;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents.Join;
-import net.minecraft.entity.boss.ServerBossBar;
-import net.minecraft.entity.boss.BossBar.Color;
-import net.minecraft.entity.boss.BossBar.Style;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 
+/**
+ * 全服点歌队列核心状态机。
+ *
+ * <p>v1.2.0：移除原 BossBar 显示方案，歌曲信息与歌词改由客户端 HUD 渲染
+ * （屏幕左上角信息卡片）。服务端职责收敛为：
+ * <ul>
+ *   <li>维护队列与当前播放项，广播播放/停止/队列同步包</li>
+ *   <li>抓取歌词（含翻译）并解析为「时间戳 → 原文 + 译文」后下发客户端</li>
+ *   <li>计时与超时自动切歌、投票跳过</li>
+ * </ul>
+ */
 public class MusicQueueManager {
    private static final Queue<MusicQueueManager.MusicEntry> queue = new ConcurrentLinkedQueue<>();
    private static MusicQueueManager.MusicEntry currentPlaying = null;
@@ -35,19 +45,21 @@ public class MusicQueueManager {
    private static int tickCounter = 0;
    private static final Map<UUID, Long> requestCooldowns = new HashMap<>();
    private static final Set<UUID> skipVoters = new HashSet<>();
-   private static ServerBossBar musicBossBar = null;
    private static long currentStartTimeMs = 0L;
    private static volatile List<MusicQueueManager.LyricLine> currentLyrics = new ArrayList<>();
-   private static String lastBossBarText = "";
+   private static volatile String lyricsSongId = "";
    private static boolean startedCalibrated = false;
-   private static final Pattern LRC_PATTERN = Pattern.compile("\\[(\\d+):(\\d+)(?:\\.(\\d+))?\\](.*)");
+
+   /** LRC 时间标签：{@code [mm:ss.xx]}，允许一行出现多个（翻译文件常见） */
+   private static final Pattern TIME_TAG = Pattern.compile("\\[(\\d+):(\\d+(?:\\.\\d+)?)\\]");
+   /** 译文匹配容差：时间戳相差在此范围内视为同一行 */
+   private static final long TRANSLATION_TOLERANCE_MS = 500L;
 
    public static void init() {
       ServerTickEvents.END_SERVER_TICK.register((EndTick)server -> {
          tickCounter++;
          if (tickDelay <= 0 || tickCounter % tickDelay == 0) {
             if (tickCounter % 5 == 0) {
-               tickUpdateBossBar();
                checkCurrentSongTimeout();
             }
          }
@@ -58,16 +70,24 @@ public class MusicQueueManager {
             return;
          }
 
-         // 中途加入：补挂 BossBar，并补发当前播放包，让新玩家能听到音乐
+         // 中途加入：补发当前播放包（含 HUD 元数据）与已加载的歌词，让新玩家立刻看到信息卡片
          if (currentPlaying != null) {
-            if (musicBossBar != null && musicBossBar.isVisible()) {
-               musicBossBar.addPlayer(joining);
-            }
-
             try {
                String urlWithVolume = appendVolumeParam(currentPlaying.url);
                int offset = getCurrentPlaybackOffsetSeconds();
-               PlaySongPacket.send(joining, currentPlaying.songId, currentPlaying.title, currentPlaying.artist, urlWithVolume, "", offset);
+               PlaySongPacket.send(
+                  joining,
+                  currentPlaying.songId,
+                  currentPlaying.title,
+                  currentPlaying.artist,
+                  urlWithVolume,
+                  currentPlaying.coverUrl,
+                  currentPlaying.album,
+                  currentPlaying.requesterName,
+                  currentPlaying.duration,
+                  offset
+               );
+               sendLyricsTo(joining);
                SimpMusicServer.LOGGER.info(
                   "Re-sent current song to joining player {}: {} - {} (offset {}s)", joining.getName().getString(), currentPlaying.title, currentPlaying.artist, offset
                );
@@ -88,7 +108,9 @@ public class MusicQueueManager {
       SimpMusicServer.LOGGER.info("Queue tick delay set to {} ticks", tickDelay);
    }
 
-   public static boolean addToQueue(String songId, String title, String artist, String url, int duration, ServerPlayerEntity requester) {
+   public static boolean addToQueue(
+      String songId, String title, String artist, String album, String coverUrl, String url, int duration, ServerPlayerEntity requester
+   ) {
       if (!checkCooldown(requester)) {
          requester.sendMessage(Text.literal(ModConfig.getPrefix() + " §c请等待 " + ModConfig.getRequestCooldown() + " 秒后再点歌").formatted(Formatting.RED), false);
          return false;
@@ -127,7 +149,7 @@ public class MusicQueueManager {
       }
 
       if (url != null && !url.isEmpty()) {
-         queue.add(new MusicQueueManager.MusicEntry(songId, title, artist, url, duration, requester));
+         queue.add(new MusicQueueManager.MusicEntry(songId, title, artist, album, coverUrl, url, duration, requester));
          setCooldown(requester);
          if (currentPlaying == null) {
             playNext();
@@ -151,7 +173,7 @@ public class MusicQueueManager {
    public static void skipCurrent() {
       SimpMusicServer.LOGGER.info("Skipping current song: {}", currentPlaying != null ? currentPlaying.title : "null");
       currentPlaying = null;
-      hideBossBar();
+      clearLyrics();
       broadcastStop();
       if (server != null) {
          server.execute(() -> playNext());
@@ -165,15 +187,16 @@ public class MusicQueueManager {
       if (currentPlaying != null && server != null) {
          SimpMusicServer.LOGGER.info("Playing next: {} - {}", currentPlaying.title, currentPlaying.artist);
          skipVoters.clear();   // 换歌后清空上一首的跳过投票
+         clearLyrics();
          broadcastPlay(currentPlaying);
          broadcastQueueSync();
          currentStartTimeMs = System.currentTimeMillis();
-         lastBossBarText = "";
          startedCalibrated = false;   // 等待客户端实际播放后校准计时
-         setupBossBar();
-         loadLyricsAsync(currentPlaying.songId);
+         if (ModConfig.isShowMusicHud()) {
+            loadLyricsAsync(currentPlaying.songId);
+         }
       } else {
-         hideBossBar();
+         clearLyrics();
       }
    }
 
@@ -230,13 +253,13 @@ public class MusicQueueManager {
    }
 
    /**
-    * 客户端实际开始播放后回调：以客户端的真实播放位置为基准对齐 BossBar 歌词/进度计时。
+    * 客户端实际开始播放后回调：以客户端的真实播放位置为基准对齐计时（超时切歌与 HUD 进度）。
     *
     * @param playedSeconds 客户端本次开始播放时已经过的时间（中途加入/重连时为服务端下发的进度）
     *
     * 首次校准用于修正"下载+解码延迟"造成的歌词领先；
     * 当场上只有一名玩家（重连场景，无人受影响）时允许再次校准，
-    * 保证歌词与该玩家实际听到的位置严格对齐。
+    * 保证计时与该玩家实际听到的位置严格对齐。
     */
    public static void onClientPlayStarted(ServerPlayerEntity player, String songId, int playedSeconds) {
       if (currentPlaying == null) {
@@ -249,14 +272,13 @@ public class MusicQueueManager {
 
       int online = server != null ? Math.max(1, server.getPlayerManager().getPlayerList().size()) : 1;
       if (startedCalibrated && online > 1) {
-         // 已存在全局时间轴且还有其他玩家在听：忽略，避免打乱他人歌词进度
+         // 已存在全局时间轴且还有其他玩家在听：忽略，避免打乱他人进度
          return;
       }
 
       long offsetMs = Math.max(0, playedSeconds) * 1000L;
       currentStartTimeMs = System.currentTimeMillis() - offsetMs;
       startedCalibrated = true;
-      lastBossBarText = "";
       SimpMusicServer.LOGGER.info(
          "Playback timing calibrated by {} (offset {}s, {} online): {} - {}",
          player.getName().getString(),
@@ -272,7 +294,7 @@ public class MusicQueueManager {
       queue.clear();
       requestCooldowns.clear();
       skipVoters.clear();
-      hideBossBar();
+      clearLyrics();
       broadcastStop();
       SimpMusicServer.LOGGER.info("Music queue stopped and cleared");
    }
@@ -292,37 +314,10 @@ public class MusicQueueManager {
       return new ArrayList<>(queue);
    }
 
-   private static void setupBossBar() {
-      if (ModConfig.isShowBossBar() && server != null && currentPlaying != null) {
-         try {
-            if (musicBossBar == null) {
-               musicBossBar = new ServerBossBar(Text.literal("§d♪ SimpMusic"), Color.PURPLE, Style.PROGRESS);
-            }
-
-            musicBossBar.setName(Text.literal("§d♪ " + currentPlaying.title + " §7- " + currentPlaying.artist));
-            musicBossBar.setPercent(0.0F);
-            musicBossBar.setVisible(true);
-
-            for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
-               musicBossBar.addPlayer(p);
-            }
-         } catch (Exception e) {
-            SimpMusicServer.LOGGER.debug("setupBossBar error: {}", e.getMessage());
-         }
-      }
-   }
-
-   private static void hideBossBar() {
-      try {
-         if (musicBossBar != null) {
-            musicBossBar.setVisible(false);
-            musicBossBar.clearPlayers();
-         }
-      } catch (Exception var1) {
-      }
-
-      currentLyrics.clear();
-      lastBossBarText = "";
+   /** 清空当前歌词缓存（换歌/停止时调用），避免把上一首的歌词误发给新玩家 */
+   private static void clearLyrics() {
+      currentLyrics = new ArrayList<>();
+      lyricsSongId = "";
       startedCalibrated = false;
       skipVoters.clear();
    }
@@ -336,83 +331,80 @@ public class MusicQueueManager {
       }
    }
 
-   private static void tickUpdateBossBar() {
-      if (currentPlaying != null && musicBossBar != null && musicBossBar.isVisible()) {
-         if (ModConfig.isShowBossBar()) {
-            try {
-               long elapsed = System.currentTimeMillis() - currentStartTimeMs;
-               int durationMs = currentPlaying.duration * 1000;
-               if (durationMs <= 0) {
-                  return;
-               }
-
-               float percent = Math.max(0.0F, Math.min(1.0F, (float)elapsed / durationMs));
-               musicBossBar.setPercent(percent);
-               String lyric = getLyricAt(elapsed);
-               if (lyric != null && !lyric.equals(lastBossBarText)) {
-                  lastBossBarText = lyric;
-                  Text name = Text.literal("§d♪ " + lyric).append(Text.literal(" §8[" + currentPlaying.title + "]").formatted(Formatting.DARK_GRAY));
-                  musicBossBar.setName(name);
-               }
-            } catch (Exception e) {
-               SimpMusicServer.LOGGER.debug("tickUpdateBossBar error: {}", e.getMessage());
-            }
-         }
-      }
-   }
-
-   private static String getLyricAt(long timeMs) {
-      MusicQueueManager.LyricLine best = null;
-
-      for (MusicQueueManager.LyricLine line : currentLyrics) {
-         if (line.timeMs > timeMs) {
-            break;
-         }
-
-         best = line;
-      }
-
-      return best != null ? best.text : null;
-   }
+   // ------------------------------------------------------------------
+   // 歌词：抓取 → 解析（原文 + 译文）→ 下发
+   // ------------------------------------------------------------------
 
    private static void loadLyricsAsync(String songId) {
-      NeteaseApiClient.getLyric(songId).thenAccept(lrc -> {
-         if (lrc != null && !lrc.isEmpty()) {
-            List<MusicQueueManager.LyricLine> parsed = parseLyrics(lrc);
-            if (!parsed.isEmpty()) {
-               currentLyrics = parsed;
-               SimpMusicServer.LOGGER.info("Loaded {} lyric lines for song {}", parsed.size(), songId);
-            }
+      NeteaseApiClient.getLyricWithTranslation(songId).thenAccept(data -> {
+         if (data == null || data.lrc == null || data.lrc.isEmpty()) {
+            SimpMusicServer.LOGGER.info("No lyrics available for song {}", songId);
+            return;
          }
+
+         List<MusicQueueManager.LyricLine> parsed = parseLyrics(data.lrc, data.translation);
+         if (parsed.isEmpty()) {
+            return;
+         }
+
+         // 期间可能已切歌，丢弃过期结果
+         if (currentPlaying == null || !songId.equals(currentPlaying.songId)) {
+            return;
+         }
+
+         currentLyrics = parsed;
+         lyricsSongId = songId;
+         broadcastLyrics();
+         long translated = parsed.stream().filter(l -> l.translation != null && !l.translation.isEmpty()).count();
+         SimpMusicServer.LOGGER.info(
+            "Loaded {} lyric lines ({} translated) for song {}", parsed.size(), translated, songId
+         );
       });
    }
 
-   private static List<MusicQueueManager.LyricLine> parseLyrics(String lrc) {
+   /** 把当前歌词发给某一玩家（歌词尚未加载则跳过，加载完成后会统一广播） */
+   private static void sendLyricsTo(ServerPlayerEntity player) {
+      List<MusicQueueManager.LyricLine> lines = currentLyrics;
+      if (lines == null || lines.isEmpty() || lyricsSongId.isEmpty()) {
+         return;
+      }
+
+      List<LyricsPacket.Line> payload = new ArrayList<>(lines.size());
+      for (MusicQueueManager.LyricLine l : lines) {
+         payload.add(new LyricsPacket.Line(l.timeMs, l.text, l.translation));
+      }
+
+      LyricsPacket.send(player, lyricsSongId, payload);
+   }
+
+   private static void broadcastLyrics() {
+      if (server != null) {
+         for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
+            sendLyricsTo(p);
+         }
+      }
+   }
+
+   /**
+    * 解析 LRC 原文与译文，按时间戳合并为行列表。
+    *
+    * @param lrc         原文歌词
+    * @param translation 译文歌词（可为 null）
+    */
+   private static List<MusicQueueManager.LyricLine> parseLyrics(String lrc, String translation) {
       List<MusicQueueManager.LyricLine> lines = new ArrayList<>();
 
       try {
-         for (String rawLine : lrc.split("\n")) {
-            String line = rawLine.trim();
-            Matcher m = LRC_PATTERN.matcher(line);
-            if (m.matches()) {
-               int min = Integer.parseInt(m.group(1));
-               int sec = Integer.parseInt(m.group(2));
-               long ms = (min * 60L + sec) * 1000L;
-               if (m.group(3) != null) {
-                  String frac = m.group(3);
+         TreeMap<Long, String> translations = parseTimedMap(translation);
 
-                  while (frac.length() < 3) {
-                     frac = frac + "0";
-                  }
-
-                  ms += Long.parseLong(frac.substring(0, 3));
-               }
-
-               String text = TextUtil.sanitize(m.group(4).trim());
-               if (!text.isEmpty() && !isMetadataLine(text)) {
-                  lines.add(new MusicQueueManager.LyricLine(ms, text));
-               }
+         for (Map.Entry<Long, String> entry : parseTimedMap(lrc).entrySet()) {
+            String text = TextUtil.sanitize(entry.getValue());
+            if (text.isEmpty() || isMetadataLine(text)) {
+               continue;
             }
+
+            String tr = matchTranslation(translations, entry.getKey());
+            lines.add(new MusicQueueManager.LyricLine(entry.getKey(), text, tr));
          }
 
          lines.sort(Comparator.comparingLong(l -> l.timeMs));
@@ -421,6 +413,90 @@ public class MusicQueueManager {
       }
 
       return lines;
+   }
+
+   /** 把 LRC 文本解析为「时间戳 → 文本」的有序映射（支持一行多时间标签） */
+   private static TreeMap<Long, String> parseTimedMap(String lrc) {
+      TreeMap<Long, String> map = new TreeMap<>();
+      if (lrc == null || lrc.isEmpty()) {
+         return map;
+      }
+
+      for (String rawLine : lrc.split("\n")) {
+         String line = rawLine.trim();
+         if (line.isEmpty()) {
+            continue;
+         }
+
+         Matcher m = TIME_TAG.matcher(line);
+         List<Long> times = new ArrayList<>();
+         int lastEnd = 0;
+
+         while (m.find()) {
+            times.add(toMillis(m.group(1), m.group(2)));
+            lastEnd = m.end();
+         }
+
+         if (times.isEmpty() || lastEnd >= line.length()) {
+            continue;
+         }
+
+         String text = line.substring(lastEnd).trim();
+         if (text.isEmpty()) {
+            continue;
+         }
+
+         for (long t : times) {
+            // 同一时间戳出现多次时保留首条，避免叠加标签造成的重复
+            map.putIfAbsent(t, text);
+         }
+      }
+
+      return map;
+   }
+
+   /** {@code [mm:ss.xx]} → 毫秒 */
+   private static long toMillis(String minStr, String secStr) {
+      int minutes = Integer.parseInt(minStr);
+
+      if (secStr.contains(".")) {
+         String[] parts = secStr.split("\\.");
+         long seconds = Long.parseLong(parts[0]);
+         String frac = parts[1];
+         while (frac.length() < 3) {
+            frac = frac + "0";
+         }
+         return (minutes * 60L + seconds) * 1000L + Long.parseLong(frac.substring(0, 3));
+      }
+
+      return (minutes * 60L + Long.parseLong(secStr)) * 1000L;
+   }
+
+   /** 按时间戳取译文：优先精确匹配，否则在容差范围内取最近的一行 */
+   private static String matchTranslation(TreeMap<Long, String> translations, long timeMs) {
+      if (translations.isEmpty()) {
+         return "";
+      }
+
+      String exact = translations.get(timeMs);
+      if (exact != null) {
+         return exact;
+      }
+
+      Map.Entry<Long, String> floor = translations.floorEntry(timeMs);
+      Map.Entry<Long, String> ceil = translations.ceilingEntry(timeMs);
+      long floorDelta = floor != null ? Math.abs(timeMs - floor.getKey()) : Long.MAX_VALUE;
+      long ceilDelta = ceil != null ? Math.abs(ceil.getKey() - timeMs) : Long.MAX_VALUE;
+
+      if (floorDelta <= TRANSLATION_TOLERANCE_MS && floorDelta <= ceilDelta) {
+         return floor.getValue();
+      }
+
+      if (ceilDelta <= TRANSLATION_TOLERANCE_MS) {
+         return ceil.getValue();
+      }
+
+      return "";
    }
 
    private static boolean isMetadataLine(String text) {
@@ -451,7 +527,18 @@ public class MusicQueueManager {
       if (server != null) {
          for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
             String urlWithVolume = appendVolumeParam(entry.url);
-            PlaySongPacket.send(player, entry.songId, entry.title, entry.artist, urlWithVolume, "", 0);
+            PlaySongPacket.send(
+               player,
+               entry.songId,
+               entry.title,
+               entry.artist,
+               urlWithVolume,
+               entry.coverUrl,
+               entry.album,
+               entry.requesterName,
+               entry.duration,
+               0
+            );
          }
 
          Text notify = Text.literal(String.format("%s §a♪ 正在播放: §b%s §7- %s", ModConfig.getPrefix(), entry.title, entry.artist));
@@ -509,13 +596,16 @@ public class MusicQueueManager {
       return url + separator + "simpmusic_volume=" + vol;
    }
 
+   /** 一行歌词：时间戳、原文、译文（无翻译为空串） */
    public static class LyricLine {
       public final long timeMs;
       public final String text;
+      public final String translation;
 
-      public LyricLine(long timeMs, String text) {
+      public LyricLine(long timeMs, String text, String translation) {
          this.timeMs = timeMs;
          this.text = text;
+         this.translation = translation != null ? translation : "";
       }
    }
 
@@ -523,15 +613,21 @@ public class MusicQueueManager {
       public final String songId;
       public final String title;
       public final String artist;
+      public final String album;
+      public final String coverUrl;
       public final String url;
       public final int duration;
       public final UUID requesterUuid;
       public final String requesterName;
 
-      public MusicEntry(String songId, String title, String artist, String url, int duration, ServerPlayerEntity requester) {
+      public MusicEntry(
+         String songId, String title, String artist, String album, String coverUrl, String url, int duration, ServerPlayerEntity requester
+      ) {
          this.songId = songId;
          this.title = title;
          this.artist = artist;
+         this.album = album != null ? album : "";
+         this.coverUrl = coverUrl != null ? coverUrl : "";
          this.url = url;
          this.duration = duration > 0 ? duration : 240;
          this.requesterUuid = requester.getUuid();

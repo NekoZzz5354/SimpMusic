@@ -121,9 +121,11 @@ public class MusicCommand {
                                                                               id,
                                                                               info -> {
                                                                                  String artist = info != null && info.artist != null ? info.artist : "Unknown";
+                                                                                 String album = info != null && info.album != null ? info.album : "";
+                                                                                 String coverUrl = info != null && info.coverUrl != null ? info.coverUrl : "";
                                                                                  int duration = info != null && info.duration > 0 ? info.duration : 240;
                                                                                  boolean ok = MusicQueueManager.addToQueue(
-                                                                                    id, title, artist, url, duration, player
+                                                                                    id, title, artist, album, coverUrl, url, duration, player
                                                                                  );
                                                                                  if (ok) {
                                                                                     Text notify = Text.literal(

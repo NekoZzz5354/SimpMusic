@@ -3,6 +3,9 @@ package com.simpmusic.client.network;
 import com.simpmusic.client.SimpMusicClient;
 import com.simpmusic.client.audio.MusicAudioStream;
 import com.simpmusic.client.gui.MusicScreen;
+import com.simpmusic.client.hud.MusicHud;
+import java.util.ArrayList;
+import java.util.List;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.text.Text;
@@ -10,16 +13,23 @@ import net.minecraft.util.Identifier;
 
 public class ClientNetworkHandler {
    public static void register() {
+      // ---- 开始播放：携带 HUD 所需的完整元数据（封面 / 专辑 / 点歌人 / 时长）----
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "play_song"), (client, handler, buf, responseSender) -> {
          String songId = buf.readString();
          String title = buf.readString();
          String artist = buf.readString();
          String url = buf.readString();
          String coverUrl = buf.readString();
+         String album = buf.readString();
+         String requester = buf.readString();
+         int duration = buf.readInt();
          int startOffset = buf.readInt();
-         SimpMusicClient.LOGGER.info("Playing: {} - {} ({}) offset={}s", new Object[]{title, artist, url, startOffset});
+         SimpMusicClient.LOGGER.info(
+            "Playing: {} - {} ({}) offset={}s cover={}", title, artist, url, startOffset, coverUrl.isEmpty() ? "none" : "yes"
+         );
          client.execute(() -> {
             try {
+               MusicHud.beginSong(songId, title, artist, album, requester, coverUrl, duration, startOffset);
                MusicAudioStream.play(songId, title, artist, url, startOffset);
                SimpMusicClient.setPlaying(true, title + " - " + artist);
                if (client.player != null) {
@@ -33,9 +43,27 @@ public class ClientNetworkHandler {
             }
          });
       });
+
+      // ---- 歌词（含翻译）：整体下发，客户端直接缓存备用 ----
+      ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "lyrics"), (client, handler, buf, responseSender) -> {
+         String songId = buf.readString();
+         int count = buf.readInt();
+         List<MusicHud.Line> lines = new ArrayList<>(Math.max(0, count));
+
+         for (int i = 0; i < count; i++) {
+            long timeMs = buf.readLong();
+            String text = buf.readString();
+            String translation = buf.readString();
+            lines.add(new MusicHud.Line(timeMs, text, translation));
+         }
+
+         client.execute(() -> MusicHud.setLyrics(songId, lines));
+      });
+
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "stop_song"), (client, handler, buf, responseSender) -> client.execute(() -> {
          try {
             MusicAudioStream.stop();
+            MusicHud.endSong();
             SimpMusicClient.setPlaying(false, "");
             if (client.player != null) {
                client.player.sendMessage(Text.literal("§c⏹ 音乐已停止"), true);
@@ -44,6 +72,7 @@ public class ClientNetworkHandler {
             SimpMusicClient.LOGGER.debug("Stop error (caught): {}", e.getMessage());
          }
       }));
+
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "sync_queue"), (client, handler, buf, responseSender) -> {
          boolean hasCurrent = buf.readBoolean();
          String currentTitle = "";
@@ -70,6 +99,7 @@ public class ClientNetworkHandler {
             }
          });
       });
+
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "search_result"), (client, handler, buf, responseSender) -> {
          int count = buf.readInt();
          client.execute(() -> MusicScreen.setSearchResults(count, buf));
@@ -79,6 +109,7 @@ public class ClientNetworkHandler {
       ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
          try {
             MusicAudioStream.stop();
+            MusicHud.endSong();
             SimpMusicClient.setPlaying(false, "");
             SimpMusicClient.LOGGER.info("Disconnected from server — playback stopped");
          } catch (Exception e) {

@@ -339,6 +339,60 @@ public class NeteaseApiClient {
       );
    }
 
+   /**
+    * 拉取歌词 + 翻译（v1.2.0 起 HUD 需要一并展示原文与译文）。
+    *
+    * <p>官方接口 {@code /api/song/lyric?lv=-1&tv=-1} 会同时返回：
+    * <ul>
+    *   <li>{@code lrc.lyric} —— 原文（可能含时间标签）</li>
+    *   <li>{@code tlyric.lyric} —— 中文翻译（外语歌才有，可能为空）</li>
+    *   <li>{@code romalrc.lyric} —— 罗马音（日文歌常有，可选）</li>
+    * </ul>
+    */
+   public static CompletableFuture<NeteaseApiClient.LyricsData> getLyricWithTranslation(String songId) {
+      return CompletableFuture.supplyAsync(() -> {
+         NeteaseApiClient.LyricsData data = new NeteaseApiClient.LyricsData();
+
+         try {
+            String url;
+            if (isOfficialMode()) {
+               url = ModConfig.getApiBaseUrl().replaceAll("/$", "") + "/api/song/lyric?id=" + songId + "&lv=-1&kv=-1&tv=-1";
+            } else {
+               url = ModConfig.getApiBaseUrl() + "lyric?id=" + songId;
+            }
+
+            HttpResponse<String> resp = HTTP.send(
+               officialRequest(url, UA_PC).build(), BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            if (resp.statusCode() != 200) {
+               return data;
+            }
+
+            JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
+            data.lrc = readNestedLyric(root, "lrc");
+            data.translation = readNestedLyric(root, "tlyric");
+            data.roman = readNestedLyric(root, "romalrc");
+            data.ok = data.lrc != null && !data.lrc.isEmpty();
+         } catch (Exception e) {
+            SimpMusicServer.LOGGER.debug("GetLyricWithTranslation error: {}", e.getMessage());
+         }
+
+         return data;
+      });
+   }
+
+   /** 从 {@code {"<field>": {"lyric": "..."}}} 结构中取出歌词文本，缺失返回 null */
+   private static String readNestedLyric(JsonObject root, String field) {
+      if (root.has(field) && root.get(field).isJsonObject()) {
+         JsonObject node = root.getAsJsonObject(field);
+         if (node.has("lyric") && !node.get("lyric").isJsonNull()) {
+            String text = node.get("lyric").getAsString();
+            return text != null && !text.isEmpty() ? text : null;
+         }
+      }
+      return null;
+   }
+
    public static void searchAsync(String keyword, Consumer<List<NeteaseApiClient.SongInfo>> callback) {
       search(keyword).thenAccept(resp -> {
          if (callback != null) {
@@ -395,6 +449,16 @@ public class NeteaseApiClient {
          SimpMusicServer.LOGGER.error("Parse song info error: {}", e.getMessage());
          return null;
       }
+   }
+
+   public static class LyricsData {
+      /** 原文歌词（LRC） */
+      public String lrc;
+      /** 中文翻译（外语歌才有，可能为 null） */
+      public String translation;
+      /** 罗马音（日/韩文歌常有，可能为 null） */
+      public String roman;
+      public boolean ok;
    }
 
    public static class SearchResponse {
