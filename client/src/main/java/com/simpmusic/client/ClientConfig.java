@@ -65,6 +65,11 @@ public class ClientConfig {
 
          if (json.has("update_repo_path")) {
             updateRepoPath = json.get("update_repo_path").getAsString();
+            // 旧配置残留 MTRMusic（更名前仓库）会导致永远检测不到更新，这里自动迁移
+            if (updateRepoPath != null && updateRepoPath.contains("MTRMusic")) {
+               SimpMusicClient.LOGGER.info("Migrating legacy update repo path {} -> NekoZzz5354/SimpMusic", updateRepoPath);
+               updateRepoPath = "NekoZzz5354/SimpMusic";
+            }
          }
 
          if (json.has("update_token")) {

@@ -34,6 +34,51 @@
 
 ---
 
+## [1.2.3] - 2026-10-11
+
+### 🔴 修复 - 封面导致客户端崩溃（OutOfMemoryError）
+
+根据玩家提供的游戏日志定位到确切崩溃点：
+
+```
+java.lang.OutOfMemoryError: Out of stack space.
+    at org.lwjgl.system.MemoryStack.nmalloc(MemoryStack.java:322)
+    at net.minecraft.class_1011.method_49277(...)          <- NativeImage.read(byte[])
+    at com.simpmusic.client.hud.CoverTexture.applyImage(...)
+```
+
+- **根因**：`NativeImage.read(byte[])` 的实现是
+  `MemoryStack.malloc(bytes.length)` ——把**整个图片文件**先放到 **LWJGL 线程局部栈**上。
+  该栈的默认容量只有 **64 KB**（实测：`malloc(64KB)` 正常，`malloc(65KB)` 立即抛
+  `OutOfMemoryError: Out of stack space.`）。
+  也就是说**只要封面图片文件超过 64 KB，就必然抛错**；而它抛的是 `Error` 不是
+  `Exception`，原来的 `catch (Exception)` 接不住，直接把渲染线程打崩、游戏退出。
+- **修复**：
+  - 改用 **`NativeImage.read(InputStream)`**（流式重载，内部走堆外分配，**没有 64 KB 限制**）；
+  - 解码移到**后台线程**，渲染线程只做最后的 GL 上传，不再占用渲染线程的任何栈空间；
+  - 兜底改为 **`catch (Throwable)`**：封面加载/解码/上传失败一律只记日志，**绝不崩游戏**；
+  - HUD 的每帧绘制整体再加一层 `Throwable` 兜底。
+
+### 🔴 修复 - 播放音乐时内存暴涨（内存泄漏）
+
+- **根因**：PCM 缓冲队列是无界的 `LinkedBlockingQueue`。解码线程会**尽可能快地把整首歌解码完**
+  并全部塞进队列，而消费者（渲染线程每帧只取 0.25 秒）根本追不上——
+  一首 4 分钟 44.1kHz 立体声 16bit 的歌约 **40 MB+** 的 PCM 会长期驻留内存，
+  连着播几首就把内存吃满。
+- **修复**：队列改为**有界**（24 块 ≈ 6 秒音频），写满时阻塞，形成**背压**，
+  解码速度被限制到与播放速度相当，常驻内存只剩几秒音频的量级。
+- `close()` 会先置关闭标志再清队列，保证阻塞中的解码线程立即退出、不会卡死。
+
+### 🔧 其他
+
+- 音频下载改用**浏览器 UA** 并**跟随重定向**：日志中出现过 `Audio download failed: HTTP 403`，
+  部分 CDN 节点会对未知 UA / 未跟随跳转直接拒绝。
+- 客户端/服务端配置里的旧仓库地址 `NekoZzz5354/MTRMusic` 会自动迁移为
+  `NekoZzz5354/SimpMusic`（日志显示更新检测仍在查旧仓库，永远检测不到新版本）。
+- 版本号 1.2.3。
+
+---
+
 ## [1.2.2] - 2026-10-11
 
 ### 🔴 修复 - 歌曲封面依然不显示（新增服务端中转兜底）

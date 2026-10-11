@@ -132,8 +132,21 @@ public final class MusicHud {
       return active;
    }
 
-   /** 由 HUD 渲染回调每帧调用 */
+   /**
+    * 由 HUD 渲染回调每帧调用。
+    *
+    * <p>整体包一层 {@code Throwable} 兜底：HUD 绘制出现问题（哪怕是 OOM）
+    * 也绝不能让渲染主循环抛异常导致游戏崩溃。
+    */
    public static void render(DrawContext context, float tickDelta) {
+      try {
+         renderInternal(context, tickDelta);
+      } catch (Throwable t) {
+         SimpMusicClient.LOGGER.warn("HUD render failed (ignored): {}", t.toString());
+      }
+   }
+
+   private static void renderInternal(DrawContext context, float tickDelta) {
       if (!active || !ClientConfig.isShowMusicHud()) {
          return;
       }

@@ -45,6 +45,14 @@ public class MusicAudioStream {
    private static final int PREFILL_COUNT = 3;
    private static final float BUFFER_SECONDS = 0.25F;
    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15L)).build();
+   /** 媒体下载专用：跟随重定向；网易云音频直链常 302 到具体 CDN 节点 */
+   private static final HttpClient HTTP_MEDIA = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(15L))
+      .followRedirects(HttpClient.Redirect.NORMAL)
+      .build();
+   /** 浏览器 UA：部分 CDN 节点会对未知 UA 直接返回 403（日志中已出现过） */
+   private static final String UA_BROWSER =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
    private static int bufferSize = 4096;
    private static float volumeMultiplier = 1.0F;
    private static SoundCategory soundCategory = SoundCategory.MASTER;
@@ -232,11 +240,13 @@ public class MusicAudioStream {
    private static byte[] downloadAudioData(String url) {
       try {
          HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-            .header("User-Agent", "SimpMusic/" + SimpMusicClient.VERSION)
+            .header("User-Agent", UA_BROWSER)
             .header("Referer", "https://music.163.com/")
+            .header("Accept", "*/*")
             .timeout(Duration.ofSeconds(30L))
+            .GET()
             .build();
-         HttpResponse<byte[]> resp = HTTP.send(req, BodyHandlers.ofByteArray());
+         HttpResponse<byte[]> resp = HTTP_MEDIA.send(req, BodyHandlers.ofByteArray());
          byte[] body = resp.body();
 
          if (resp.statusCode() == 200 && body != null && body.length > 0) {

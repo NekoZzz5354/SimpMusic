@@ -44,6 +44,8 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 - 玩家中途 JOIN → 补发 PlaySongPacket 与已加载歌词
 - 封面：客户端优先直连图片 CDN，失败则由服务端代下（request_cover → cover 包回传）
 - 音频结束：客户端上报 play_finished，服务端据此立即推进队列（不再只靠时长超时）
+- PCM 缓冲队列**有界**（约 6 秒），写满阻塞形成背压，避免整首歌 PCM 常驻内存
+- 封面解码用 `NativeImage.read(InputStream)`（堆外分配）并在后台线程完成，规避 LWJGL 64KB 线程栈上限
 
 ### 网络包协议（Fabric Custom Payload，id 前缀 `simpmusic:`）
 

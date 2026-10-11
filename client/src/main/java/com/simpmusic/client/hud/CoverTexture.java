@@ -1,6 +1,7 @@
 package com.simpmusic.client.hud;
 
 import com.simpmusic.client.SimpMusicClient;
+import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -127,8 +128,20 @@ public final class CoverTexture {
          return;
       }
 
-      MinecraftClient client = MinecraftClient.getInstance();
-      client.execute(() -> applyImage("服务端中转", data));
+      final String wanted = songId;
+      CompletableFuture.supplyAsync(() -> decode(data)).thenAccept(image -> MinecraftClient.getInstance().execute(() -> {
+         if (!wanted.equals(currentSongId)) {
+            closeQuietly(image);
+            return;
+         }
+
+         if (image == null) {
+            SimpMusicClient.LOGGER.warn("[Cover] 服务端中转的图片解码失败");
+            return;
+         }
+
+         upload(image, "服务端中转");
+      }));
    }
 
    /** 释放当前封面（停止播放时调用）。纹理对象保留复用，仅标记为无图。 */
@@ -150,17 +163,20 @@ public final class CoverTexture {
    // ------------------------------------------------------------------
 
    private static void loadAsync(String url, int attempt) {
-      CompletableFuture.supplyAsync(() -> downloadWithFallback(url)).thenAccept(bytes -> {
-         MinecraftClient client = MinecraftClient.getInstance();
-         client.execute(() -> {
+      // 下载与解码都在后台线程完成；只有最后的纹理上传回到渲染线程
+      CompletableFuture
+         .supplyAsync(() -> downloadWithFallback(url))
+         .thenApply(bytes -> bytes == null ? null : decode(bytes))
+         .thenAccept(image -> MinecraftClient.getInstance().execute(() -> {
             // 期间可能已切歌，丢弃过期结果
             if (!url.equals(currentUrl)) {
+               closeQuietly(image);
                return;
             }
 
-            if (bytes == null) {
+            if (image == null) {
                if (attempt == 0) {
-                  SimpMusicClient.LOGGER.warn("[Cover] 直连下载失败，{}ms 后重试: {}", RETRY_DELAY_MS, url);
+                  SimpMusicClient.LOGGER.warn("[Cover] 直连失败，{}ms 后重试: {}", RETRY_DELAY_MS, url);
                   CompletableFuture.runAsync(() -> {
                      try {
                         Thread.sleep(RETRY_DELAY_MS);
@@ -176,9 +192,71 @@ public final class CoverTexture {
                return;
             }
 
-            applyImage("直连", bytes);
-         });
-      });
+            upload(image, "直连");
+         }));
+   }
+
+   /**
+    * 解码图片字节为 {@link NativeImage}（后台线程执行）。
+    *
+    * <p><b>关键：必须用流式重载，不能用 {@code NativeImage.read(byte[])}。</b>
+    * 后者内部是 {@code MemoryStack.malloc(bytes.length)}——把整个图片文件先放到
+    * <b>LWJGL 线程局部的栈</b>上（默认仅 64KB），只要图片文件超过 64KB 就会抛出
+    * {@code OutOfMemoryError: Out of stack space}，进而把渲染线程直接打崩
+    * （v1.2.2 的崩溃即由此而来）。{@code read(InputStream)} 走的是堆外分配，
+    * 没有这个限制。
+    */
+   private static NativeImage decode(byte[] bytes) {
+      try {
+         NativeImage image = NativeImage.read(new ByteArrayInputStream(bytes));
+         int w = image.getWidth();
+         int h = image.getHeight();
+         if (w <= 0 || h <= 0) {
+            image.close();
+            SimpMusicClient.LOGGER.warn("[Cover] 图片尺寸异常 {}x{}", w, h);
+            return null;
+         }
+         return image;
+      } catch (Throwable t) {
+         // 用 Throwable 兜底：解码失败（哪怕是 OutOfMemoryError）也绝不能崩游戏
+         SimpMusicClient.LOGGER.warn("[Cover] 解码失败 ({} bytes): {}", bytes.length, t.toString());
+         return null;
+      }
+   }
+
+   /** 在渲染线程把像素交给动态纹理 */
+   private static void upload(NativeImage image, String source) {
+      MinecraftClient client = MinecraftClient.getInstance();
+
+      try {
+         if (texture == null) {
+            // 构造时会直接完成 GL 上传（当前就在渲染线程）
+            texture = new NativeImageBackedTexture(image);
+            client.getTextureManager().registerTexture(ID, texture);
+            registered = true;
+         } else {
+            // setImage 内部会关闭旧图，不会泄漏原生的图片内存
+            texture.setImage(image);
+            texture.upload();
+         }
+
+         texWidth = image.getWidth();
+         texHeight = image.getHeight();
+         hasImage = true;
+         SimpMusicClient.LOGGER.info("[Cover] 封面已加载（{}）{}x{}", source, texWidth, texHeight);
+      } catch (Throwable t) {
+         SimpMusicClient.LOGGER.warn("[Cover] 纹理上传失败（{}）: {}", source, t.toString());
+         closeQuietly(image);
+      }
+   }
+
+   private static void closeQuietly(NativeImage image) {
+      if (image != null) {
+         try {
+            image.close();
+         } catch (Throwable ignored) {
+         }
+      }
    }
 
    private static void requestFromServer() {
@@ -195,41 +273,6 @@ public final class CoverTexture {
          SimpMusicClient.LOGGER.info("[Cover] 已向服务端请求封面中转: song={}", currentSongId);
       } catch (Exception e) {
          SimpMusicClient.LOGGER.warn("[Cover] 发送中转请求失败: {}", e.getMessage());
-      }
-   }
-
-   /** 在渲染线程把像素写进动态纹理 */
-   private static void applyImage(String source, byte[] bytes) {
-      MinecraftClient client = MinecraftClient.getInstance();
-
-      try {
-         NativeImage image = NativeImage.read(bytes);
-         int w = image.getWidth();
-         int h = image.getHeight();
-
-         if (w <= 0 || h <= 0) {
-            image.close();
-            SimpMusicClient.LOGGER.warn("[Cover] 图片尺寸异常 {}x{}", w, h);
-            return;
-         }
-
-         TextureManager tm = client.getTextureManager();
-
-         if (texture == null) {
-            texture = new NativeImageBackedTexture(image);
-            tm.registerTexture(ID, texture);
-            registered = true;
-         } else {
-            texture.setImage(image);
-            texture.upload();
-         }
-
-         texWidth = w;
-         texHeight = h;
-         hasImage = true;
-         SimpMusicClient.LOGGER.info("[Cover] 封面已加载（{}）{}x{} ({} bytes)", source, w, h, bytes.length);
-      } catch (Exception e) {
-         SimpMusicClient.LOGGER.warn("[Cover] 封面解码失败（{}）({} bytes): {}", source, bytes.length, e.getMessage());
       }
    }
 
