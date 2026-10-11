@@ -1,5 +1,7 @@
 package com.simpmusic.server;
 
+import com.simpmusic.server.network.AudioChunkPacket;
+import com.simpmusic.server.network.AudioRequestPacket;
 import com.simpmusic.server.network.CoverPacket;
 import com.simpmusic.server.network.LyricsPacket;
 import com.simpmusic.server.network.PlayFinishedPacket;
@@ -27,7 +29,7 @@ import org.slf4j.LoggerFactory;
 public class SimpMusicServer implements ModInitializer {
    public static final String MOD_ID = "simpmusic";
    public static final String MOD_NAME = "SimpMusic";
-   public static final String VERSION = "1.2.3";
+   public static final String VERSION = "1.2.4";
    public static final Logger LOGGER = LoggerFactory.getLogger("SimpMusic");
    private static MinecraftServer serverInstance;
 
@@ -47,6 +49,8 @@ public class SimpMusicServer implements ModInitializer {
       ServerPlayNetworking.registerGlobalReceiver(CoverPacket.TYPE, CoverPacket::handle);
       ServerPlayNetworking.registerGlobalReceiver(RequestCoverPacket.TYPE, RequestCoverPacket::handle);
       ServerPlayNetworking.registerGlobalReceiver(PlayFinishedPacket.TYPE, PlayFinishedPacket::handle);
+      ServerPlayNetworking.registerGlobalReceiver(AudioRequestPacket.TYPE, AudioRequestPacket::handle);
+      ServerPlayNetworking.registerGlobalReceiver(AudioChunkPacket.TYPE, AudioChunkPacket::handle);
       MusicQueueManager.init();
       ServerLifecycleEvents.SERVER_STARTED.register((ServerStarted)server -> {
          serverInstance = server;

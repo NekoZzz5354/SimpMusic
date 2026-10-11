@@ -98,6 +98,14 @@ public class StreamingAudioStream implements AudioStream {
 
             this.current = this.queue.poll();
             this.currentPos = 0;
+
+            // close() 可能与本方法并发清空队列，poll 后必须再判空，否则会 NPE
+            if (this.current == null) {
+               if (this.eof || System.currentTimeMillis() > deadline) {
+                  break;
+               }
+               continue;
+            }
          }
 
          int n = Math.min(size - total, this.current.length - this.currentPos);

@@ -27,6 +27,16 @@ public class NeteaseApiClient {
       .build();
    /** 封面字节上限 */
    private static final int MAX_IMAGE_BYTES = 512 * 1024;
+   /** 音频中转字节上限 */
+   private static final int MAX_AUDIO_BYTES = 24 * 1024 * 1024;
+   /** 媒体下载专用：跟随重定向；网易云直链常 302 到具体 CDN 节点 */
+   private static final HttpClient HTTP_MEDIA = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(15L))
+      .followRedirects(HttpClient.Redirect.NORMAL)
+      .build();
+   /** 浏览器 UA：部分 CDN 节点对未知 UA 直接 403 */
+   private static final String UA_BROWSER =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
    private static final String OFFICIAL_HOST = "music.163.com";
 
    /** 移动端 UA：网易云对移动端放的音质档位通常更高，VIP 鉴权也最稳定 */
@@ -498,6 +508,71 @@ public class NeteaseApiClient {
       }
 
       return null;
+   }
+
+   /**
+    * 由服务端下载音频数据。
+    *
+    * <p>必须由**解析直链的同一 IP**（即服务端）下载：直链里的 {@code authSecret}
+    * 与请求方 IP 绑定，客户端换 IP 下载会被 CDN 以 403 拒绝。
+    */
+   public static byte[] downloadAudio(String url) {
+      if (url == null || url.isEmpty()) {
+         return null;
+      }
+
+      try {
+         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+            .header("User-Agent", UA_BROWSER)
+            .header("Referer", UA_REFERER)
+            .header("Accept", "*/*")
+            .timeout(Duration.ofSeconds(60L))
+            .GET()
+            .build();
+         HttpResponse<byte[]> resp = HTTP_MEDIA.send(req, BodyHandlers.ofByteArray());
+         byte[] body = resp.body();
+
+         if (resp.statusCode() == 200 && body != null && body.length > 0) {
+            if (body.length > MAX_AUDIO_BYTES) {
+               SimpMusicServer.LOGGER.warn("Audio too large: {} bytes", body.length);
+               return null;
+            }
+
+            long declared = resp.headers().firstValueAsLong("content-length").orElse(-1L);
+            if (declared > 0L && body.length < declared) {
+               SimpMusicServer.LOGGER.warn("Audio truncated: {} of {} bytes", body.length, declared);
+               return null;
+            }
+
+            return body;
+         }
+
+         SimpMusicServer.LOGGER.warn("Audio download HTTP {}: {}", resp.statusCode(), url);
+      } catch (Exception e) {
+         SimpMusicServer.LOGGER.warn("Audio download error: {} — {}", e.getMessage(), url);
+      }
+
+      return null;
+   }
+
+   /**
+    * 强制重新解析播放地址，返回若干候选（官方接口 + 外链兜底）。
+    * 直链带时效，已有地址失效时用它重新取。
+    */
+   public static List<String> resolveFreshAudioUrl(String songId) {
+      List<String> out = new ArrayList<>();
+
+      if (songId == null || songId.isEmpty()) {
+         return out;
+      }
+
+      String main = requestOfficialSongUrl(songId);
+      if (main != null && !main.isEmpty()) {
+         out.add(main);
+      }
+
+      out.add("https://music.163.com/song/media/outer/url?id=" + songId + ".mp3");
+      return out;
    }
 
    public static void searchAsync(String keyword, Consumer<List<NeteaseApiClient.SongInfo>> callback) {

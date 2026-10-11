@@ -69,6 +69,15 @@ public class ClientNetworkHandler {
          client.execute(() -> CoverTexture.accept(songId, data));
       });
 
+      // ---- 服务端中转的音频分包 ----
+      ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "audio_chunk"), (client, handler, buf, responseSender) -> {
+         String songId = buf.readString();
+         int seq = buf.readInt();
+         int total = buf.readInt();
+         byte[] part = buf.readByteArray();
+         MusicAudioStream.acceptChunk(songId, seq, total, part);
+      });
+
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "stop_song"), (client, handler, buf, responseSender) -> client.execute(() -> {
          try {
             MusicAudioStream.stop();

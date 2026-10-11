@@ -61,6 +61,16 @@ public class MusicAudioStream {
    private static volatile String playingSongId = "";
    private static volatile long playbackStartWallMs = 0L;
    private static volatile int playbackStartOffsetSeconds = 0;
+   /**
+    * 播放代次令牌：每次 play/stop 都会自增。
+    * 在途的「下载 / 解码 / 服务端分包回传」回调只有在代次仍匹配时才允许落地，
+    * 避免上一首的迟到回调覆盖掉新歌的音源（这正是「切歌后无声」的元凶）。
+    */
+   private static volatile long generation = 0L;
+   /** 音源长时间无数据又未结束的起始时刻（静音看门狗） */
+   private static volatile long stalledSinceMs = 0L;
+   /** 服务端音频中转的接收中上下文 */
+   private static volatile PendingAudio pendingAudio;
 
    public static void setBufferSize(int size) {
       bufferSize = Math.max(512, Math.min(16384, size));
@@ -128,8 +138,7 @@ public class MusicAudioStream {
       final int offset = Math.max(0, startOffsetSeconds);
       final int expectedSeconds = Math.max(0, durationSeconds);
       float finalVolume = volume > 0.0F ? Math.min(2.0F, volume) : 1.0F;
-
-      final boolean[] fallbackTruncated = new boolean[]{false};
+      final long gen = ++generation;
 
       CompletableFuture.<byte[]>supplyAsync(() -> {
          byte[] data = downloadAudioData(url);
@@ -156,20 +165,133 @@ public class MusicAudioStream {
             }
          }
 
-         // 兜底：即使可能被截断也先播，至少能听到一部分
-         fallbackTruncated[0] = data != null && data.length > 0 && !isAcceptableAudio(data, expectedSeconds);
          return data;
       }).thenAccept(data -> {
-         if (data != null && data.length > 0) {
-            if (fallbackTruncated[0]) {
-               notifyActionbar("§e⚠ 音频似乎不完整（服务端直链只返回了部分内容），播完将自动切下一首");
-            }
+         if (gen != generation) {
+            return;   // 已切歌，丢弃过期结果
+         }
 
-            startStreamingPlayback(data, title, artist, finalVolume, songId, offset);
+         if (data != null && data.length > 0 && isAcceptableAudio(data, expectedSeconds)) {
+            startStreamingPlayback(data, title, artist, finalVolume, songId, offset, gen);
+            return;
+         }
+
+         // 直连拿不到完整音频。VIP 直链带 authSecret（与解析方 IP 绑定），
+         // 客户端换 IP 下载会被 CDN 以 403 拒绝 —— 改由服务端代为获取并分包回传。
+         if (songId != null && !songId.isEmpty()) {
+            SimpMusicClient.LOGGER.info(
+               "直连获取音频失败（{} bytes），改由服务端中转: {}", data == null ? -1 : data.length, songId
+            );
+            requestRelay(songId, title, artist, finalVolume, offset, expectedSeconds, gen);
+            return;
+         }
+
+         if (data != null && data.length > 0) {
+            startStreamingPlayback(data, title, artist, finalVolume, songId, offset, gen);
          } else {
             notifyPlaybackFailed(title, "无法下载音频（可能为 VIP 歌曲）");
          }
       });
+   }
+
+   // ------------------------------------------------------------------
+   // 服务端音频中转（VIP 直链 IP 绑定，客户端直连必被拒）
+   // ------------------------------------------------------------------
+
+   private static void requestRelay(String songId, String title, String artist, float volume, int offset, int expected, long gen) {
+      pendingAudio = new PendingAudio(songId, title, artist, volume, offset, expected, gen);
+      notifyActionbar("§e正在从服务端获取音频…");
+
+      try {
+         net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+            net.minecraft.util.Identifier.of("simpmusic", "audio_request"),
+            net.fabricmc.fabric.api.networking.v1.PacketByteBufs.create()
+               .writeString(songId)
+               .writeInt(Math.max(0, offset))
+         );
+         SimpMusicClient.LOGGER.info("已向服务端请求音频中转: {} (offset {}s)", songId, offset);
+      } catch (Exception e) {
+         SimpMusicClient.LOGGER.warn("发送音频中转请求失败: {}", e.getMessage());
+         notifyPlaybackFailed(title, "无法请求服务端音频");
+      }
+   }
+
+   /** 接收服务端分包回传的音频，集齐后开始播放（网络线程调用） */
+   public static void acceptChunk(String songId, int seq, int total, byte[] part) {
+      PendingAudio p = pendingAudio;
+      if (p == null || !p.songId.equals(songId) || p.gen != generation) {
+         return;
+      }
+
+      if (total <= 0 || total > 4096 || seq < 0 || seq >= total || part == null || part.length == 0) {
+         SimpMusicClient.LOGGER.warn("丢弃异常音频分包: seq={}/{}", seq, total);
+         return;
+      }
+
+      if (p.parts == null) {
+         p.parts = new byte[total][];
+         p.total = total;
+      }
+
+      synchronized (p) {
+         if (p.parts[seq] == null) {
+            p.parts[seq] = part;
+            p.received++;
+         }
+
+         if (p.received < p.total) {
+            return;
+         }
+
+         int size = 0;
+         for (byte[] b : p.parts) {
+            size += b == null ? 0 : b.length;
+         }
+
+         byte[] data = new byte[size];
+         int off = 0;
+         for (byte[] b : p.parts) {
+            if (b != null) {
+               System.arraycopy(b, 0, data, off, b.length);
+               off += b.length;
+            }
+         }
+
+         pendingAudio = null;
+         SimpMusicClient.LOGGER.info("服务端音频中转完成: {} ({} bytes)", songId, data.length);
+
+         final long gen = p.gen;
+         MinecraftClient.getInstance().execute(() -> {
+            if (gen != generation) {
+               return;
+            }
+            startStreamingPlayback(data, p.title, p.artist, p.volume, p.songId, p.offset, gen);
+         });
+      }
+   }
+
+   /** 服务端音频中转接收上下文 */
+   private static final class PendingAudio {
+      final String songId;
+      final String title;
+      final String artist;
+      final float volume;
+      final int offset;
+      final int expected;
+      final long gen;
+      byte[][] parts;
+      int total;
+      int received;
+
+      PendingAudio(String songId, String title, String artist, float volume, int offset, int expected, long gen) {
+         this.songId = songId;
+         this.title = title;
+         this.artist = artist;
+         this.volume = volume;
+         this.offset = offset;
+         this.expected = expected;
+         this.gen = gen;
+      }
    }
 
    /**
@@ -283,7 +405,11 @@ public class MusicAudioStream {
       }
    }
 
-   private static void startStreamingPlayback(byte[] audioData, String title, String artist, float volume, String songId, int startOffsetSeconds) {
+   private static void startStreamingPlayback(byte[] audioData, String title, String artist, float volume, String songId, int startOffsetSeconds, long gen) {
+      if (gen != generation) {
+         return;
+      }
+
       CompletableFuture.<MusicAudioStream.DecodedSource>supplyAsync(() -> {
          try {
             AudioInputStream sourceStream = openDecoderStream(audioData);
@@ -300,6 +426,16 @@ public class MusicAudioStream {
             return null;
          }
       }).thenAccept(decoded -> MinecraftClient.getInstance().execute(() -> {
+         if (gen != generation) {
+            if (decoded != null) {
+               try {
+                  decoded.pcmStream.close();
+               } catch (Exception ignored) {
+               }
+            }
+            return;   // 已切歌：丢弃这一首的解码结果，绝不去覆盖新歌的音源
+         }
+
          if (decoded == null) {
             notifyPlaybackFailed(title, "音频解码失败（可能需要 mp3spi 等解码库）");
          } else {
@@ -341,10 +477,23 @@ public class MusicAudioStream {
    }
 
    private static boolean startDirectOpenAl(MusicAudioStream.DecodedSource decoded, String title, String artist, float volume) {
+      // 清掉历史遗留的 AL 错误，避免上一次失败影响本次判断
+      AL10.alGetError();
+
       int source = AL10.alGenSources();
       if (source == 0) {
-         SimpMusicClient.LOGGER.warn("alGenSources failed (AL error {})", AL10.alGetError());
-         return false;
+         int err = AL10.alGetError();
+         SimpMusicClient.LOGGER.warn("alGenSources failed (AL error {})，清理音源后重试", err);
+
+         // 音源可能被上一首泄漏占用：做一次彻底清理再试一次
+         cleanupDirect();
+         AL10.alGetError();
+         source = AL10.alGenSources();
+
+         if (source == 0) {
+            SimpMusicClient.LOGGER.warn("alGenSources retry failed (AL error {})，改用备用播放器", AL10.alGetError());
+            return false;
+         }
       }
 
       float safeVolume = clampVolume(volume);
@@ -404,10 +553,31 @@ public class MusicAudioStream {
    private static void feedPcm(MusicAudioStream.DecodedSource decoded, StreamingAudioStream stream) {
       try {
          byte[] buf = new byte[Math.max(bufferSize, 2048)];
+         // 按「一个播放块」（0.25 秒）为单位投放，使队列容量与实际消费节奏匹配，
+         // 避免小块过多导致预填充取不满而出现断续
+         int chunkBytes = calcBufferBytes(decoded.pcmFormat, BUFFER_SECONDS);
+         byte[] acc = new byte[chunkBytes];
+         int filled = 0;
 
          int n;
          while ((n = decoded.pcmStream.read(buf)) > 0 && currentStream == stream) {
-            stream.push(Arrays.copyOf(buf, n));
+            int off = 0;
+            while (off < n) {
+               int take = Math.min(chunkBytes - filled, n - off);
+               System.arraycopy(buf, off, acc, filled, take);
+               filled += take;
+               off += take;
+
+               if (filled == chunkBytes) {
+                  stream.push(acc);
+                  acc = new byte[chunkBytes];
+                  filled = 0;
+               }
+            }
+         }
+
+         if (filled > 0) {
+            stream.push(Arrays.copyOf(acc, filled));
          }
 
          stream.finish();
@@ -454,6 +624,22 @@ public class MusicAudioStream {
                   AL10.alSourceQueueBuffers(alSourceId, buf);
                   alBufferQueue.add(buf);
                }
+            }
+
+            // 静音看门狗：音源长时间没有任何数据、也没有走到流末尾 → 判定为异常，
+            // 主动结束这一首，避免出现「界面还显示在播放、实际一点声音都没有」的卡死状态
+            if (alBufferQueue.isEmpty() && !streamEofConsumed) {
+               if (stalledSinceMs == 0L) {
+                  stalledSinceMs = System.currentTimeMillis();
+               } else if (System.currentTimeMillis() - stalledSinceMs > 4000L) {
+                  SimpMusicClient.LOGGER.warn("Playback stalled for 4s with no data — ending this song");
+                  sendPlayFinished();
+                  cleanupDirect();
+                  MusicHud.endSong();
+                  return;
+               }
+            } else {
+               stalledSinceMs = 0L;
             }
 
             int state = AL10.alGetSourcei(alSourceId, 4112);
@@ -690,6 +876,10 @@ public class MusicAudioStream {
    }
 
    public static void stop() {
+      // 让所有在途的下载/解码/分包回调失效，避免旧歌回调干扰后续播放
+      generation++;
+      pendingAudio = null;
+      stalledSinceMs = 0L;
       cleanupDirect();
       SourceDataLine line = activeLine;
       activeLine = null;

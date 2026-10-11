@@ -233,6 +233,25 @@ public class MusicQueueManager {
       return currentPlaying;
    }
 
+   /** 取队列中已知的某首歌曲播放地址（供音频中转复用，避免重复解析） */
+   public static String getKnownUrl(String songId) {
+      if (songId == null || songId.isEmpty()) {
+         return null;
+      }
+
+      if (currentPlaying != null && songId.equals(currentPlaying.songId)) {
+         return currentPlaying.url;
+      }
+
+      for (MusicQueueManager.MusicEntry e : queue) {
+         if (songId.equals(e.songId)) {
+            return e.url;
+         }
+      }
+
+      return null;
+   }
+
    public static Queue<MusicQueueManager.MusicEntry> getQueue() {
       return queue;
    }

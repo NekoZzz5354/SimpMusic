@@ -80,16 +80,30 @@ public final class MusicHud {
    public static void beginSong(
       String id, String songTitle, String songArtist, String songAlbum, String songRequester, String coverUrl, int duration, int offsetSeconds
    ) {
-      songId = id != null ? id : "";
-      title = songTitle != null ? songTitle : "";
-      artist = songArtist != null ? songArtist : "";
-      album = songAlbum != null ? songAlbum : "";
-      requester = songRequester != null ? songRequester : "";
-      durationSeconds = Math.max(0, duration);
-      lines = new ArrayList<>();
-      startTimeMs = System.currentTimeMillis() - Math.max(0, offsetSeconds) * 1000L;
-      active = true;
-      CoverTexture.request(songId, coverUrl);
+      String newId = id != null ? id : "";
+      String newTitle = songTitle != null ? songTitle : "";
+      String newArtist = songArtist != null ? songArtist : "";
+      String newAlbum = songAlbum != null ? songAlbum : "";
+      String newRequester = songRequester != null ? songRequester : "";
+      int newDuration = Math.max(0, duration);
+
+      // 同一首歌重复下发（中途加入补发/重连）时只刷新元数据，**不重置时间轴**，
+      // 否则进度会无缘无故跳回开头
+      boolean sameSong = !newId.isEmpty() && newId.equals(songId) && active;
+
+      songId = newId;
+      title = newTitle;
+      artist = newArtist;
+      album = newAlbum;
+      requester = newRequester;
+      durationSeconds = newDuration;
+
+      if (!sameSong) {
+         lines = new ArrayList<>();
+         startTimeMs = System.currentTimeMillis() - Math.max(0, offsetSeconds) * 1000L;
+         active = true;
+         CoverTexture.request(songId, coverUrl);
+      }
    }
 
    /**

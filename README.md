@@ -19,8 +19,8 @@
 
 | 文件 | 放置位置 |
 |------|---------|
-| `SimpMusic-Server-1.2.3.jar` | 服务器 `mods/` |
-| `SimpMusic-Client-1.2.3.jar` | 客户端 `mods/` |
+| `SimpMusic-Server-1.2.4.jar` | 服务器 `mods/` |
+| `SimpMusic-Client-1.2.4.jar` | 客户端 `mods/` |
 
 > 服务端与客户端**都要装**，且版本必须一致。
 
