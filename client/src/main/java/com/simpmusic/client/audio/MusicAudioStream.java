@@ -13,8 +13,10 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.Map;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
+import javax.sound.sampled.AudioFileFormat;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
@@ -47,6 +49,10 @@ public class MusicAudioStream {
    private static float volumeMultiplier = 1.0F;
    private static SoundCategory soundCategory = SoundCategory.MASTER;
    private static volatile SourceDataLine activeLine;
+   /** 当前播放的歌曲 ID 与真实起播时刻（用于向服务端上报播放结束） */
+   private static volatile String playingSongId = "";
+   private static volatile long playbackStartWallMs = 0L;
+   private static volatile int playbackStartOffsetSeconds = 0;
 
    public static void setBufferSize(int size) {
       bufferSize = Math.max(512, Math.min(16384, size));
@@ -82,14 +88,15 @@ public class MusicAudioStream {
    }
 
    public static void play(String songId, String title, String artist, String url) {
-      play(songId, title, artist, url, 0);
+      play(songId, title, artist, url, 0, 0);
    }
 
    /**
+    * @param durationSeconds    服务端给出的歌曲时长（秒），用于判断下载到的音频是否被截断
     * @param startOffsetSeconds 起始播放位置（秒）。中途加入/重连时由服务端下发当前进度，
     *                           解码后跳过对应 PCM 数据实现无缝接续；新歌传 0。
     */
-   public static void play(String songId, String title, String artist, String url, int startOffsetSeconds) {
+   public static void play(String songId, String title, String artist, String url, int durationSeconds, int startOffsetSeconds) {
       stop();
       SimpMusicClient.LOGGER.info("Starting playback: {} by {} (offset {}s)", title, artist, startOffsetSeconds);
       float volume = volumeMultiplier;
@@ -111,32 +118,115 @@ public class MusicAudioStream {
       }
 
       final int offset = Math.max(0, startOffsetSeconds);
+      final int expectedSeconds = Math.max(0, durationSeconds);
       float finalVolume = volume > 0.0F ? Math.min(2.0F, volume) : 1.0F;
-      CompletableFuture.<byte[]>supplyAsync(() -> downloadAudioData(url)).thenAccept(data -> {
-         if (data != null && data.length > 0) {
-            startStreamingPlayback(data, title, artist, finalVolume, songId, offset);
-         } else {
-            if (songId != null && !songId.isEmpty()) {
-               SimpMusicClient.LOGGER.info("Initial URL failed, re-fetching song url for {}", songId);
 
-               try {
-                  NeteaseApiClient.getSongUrl(songId, ClientConfig.getDefaultBitrate()).thenAccept(newUrl -> {
-                     if (newUrl != null && !newUrl.equals(url)) {
-                        byte[] retry = downloadAudioData(newUrl);
-                        if (retry != null && retry.length > 0) {
-                           startStreamingPlayback(retry, title, artist, finalVolume, songId, offset);
-                           return;
-                        }
-                     }
+      final boolean[] fallbackTruncated = new boolean[]{false};
 
-                     notifyPlaybackFailed(title, "无法下载音频（可能为 VIP 歌曲）");
-                  });
-               } catch (Exception e) {
-                  SimpMusicClient.LOGGER.error("Re-fetch url error: {}", e.getMessage());
+      CompletableFuture.<byte[]>supplyAsync(() -> {
+         byte[] data = downloadAudioData(url);
+
+         // 下载失败，或下载到的音频明显短于预期（VIP 直链常见被截断/被限速截流）→ 重新解析地址再下一次
+         if (!isAcceptableAudio(data, expectedSeconds) && songId != null && !songId.isEmpty()) {
+            SimpMusicClient.LOGGER.warn(
+               "Audio incomplete ({} bytes) for {} — re-resolving fresh url",
+               data == null ? -1 : data.length, songId
+            );
+
+            try {
+               String fresh = NeteaseApiClient.getSongUrl(songId, ClientConfig.getDefaultBitrate()).get();
+               if (fresh != null && !fresh.isEmpty() && !fresh.equals(url)) {
+                  byte[] retry = downloadAudioData(fresh);
+                  if (isAcceptableAudio(retry, expectedSeconds)) {
+                     return retry;
+                  }
+
+                  SimpMusicClient.LOGGER.warn("Retry url also incomplete for {} ({} bytes)", songId, retry == null ? -1 : retry.length);
                }
+            } catch (Exception e) {
+               SimpMusicClient.LOGGER.warn("Re-fetch url error: {}", e.getMessage());
             }
          }
+
+         // 兜底：即使可能被截断也先播，至少能听到一部分
+         fallbackTruncated[0] = data != null && data.length > 0 && !isAcceptableAudio(data, expectedSeconds);
+         return data;
+      }).thenAccept(data -> {
+         if (data != null && data.length > 0) {
+            if (fallbackTruncated[0]) {
+               notifyActionbar("§e⚠ 音频似乎不完整（服务端直链只返回了部分内容），播完将自动切下一首");
+            }
+
+            startStreamingPlayback(data, title, artist, finalVolume, songId, offset);
+         } else {
+            notifyPlaybackFailed(title, "无法下载音频（可能为 VIP 歌曲）");
+         }
       });
+   }
+
+   /**
+    * 判断下载到的音频是否可用：既要格式正确，也要长度对得上。
+    *
+    * <p>VIP 歌曲的直链有时会被中断/截流，导致拿到的 MP3 只有前面一段——
+    * 文件头合法所以能解码，但播到一半就没了，表现就是「音乐停了」。
+    * 这里通过解析真实时长来识别这种被截断的文件。
+    */
+   private static boolean isAcceptableAudio(byte[] data, int expectedSeconds) {
+      if (data == null || data.length == 0 || !isAudioData(data)) {
+         return false;
+      }
+
+      if (expectedSeconds <= 0) {
+         return true;
+      }
+
+      long probedMs = probeDurationMs(data);
+      if (probedMs <= 0L) {
+         // 解析不出时长就不做判断，避免误杀
+         return true;
+      }
+
+      double ratio = probedMs / (expectedSeconds * 1000.0);
+      if (ratio < 0.85) {
+         SimpMusicClient.LOGGER.warn(
+            "Audio appears truncated: probed {}ms vs expected {}ms ({}%)", probedMs, expectedSeconds * 1000, Math.round(ratio * 100)
+         );
+         return false;
+      }
+
+      return true;
+   }
+
+   /**
+    * 估算 MP3 实际时长（毫秒），失败返回 -1。
+    *
+    * <p>mp3spi 的 {@code getAudioFileFormat} 并不提供 duration 属性（实测只有
+    * {@code mp3.bitrate.nominal.bps} / {@code mp3.header.pos} 等），因此改用
+    * 「音频字节数 ÷ 标称码率」估算：CBR 下精确，VBR 下 mp3spi 给出的 nominal 码率
+    * 本身就是平均值，估算同样贴近真实时长，足够用来判断文件是否被截断。
+    */
+   private static long probeDurationMs(byte[] data) {
+      try {
+         AudioFileFormat fmt = new MpegAudioFileReader().getAudioFileFormat(new ByteArrayInputStream(data));
+         Map<String, Object> props = fmt.properties();
+
+         Object posObj = props.get("mp3.header.pos");
+         Object brObj = props.get("mp3.bitrate.nominal.bps");
+         int headerPos = posObj instanceof Integer ? (Integer)posObj : 0;
+         long audioBytes = Math.max(0L, data.length - headerPos);
+
+         if (brObj instanceof Integer && (Integer)brObj > 0) {
+            long ms = (long)(audioBytes * 8.0 / (Integer)brObj * 1000.0);
+            SimpMusicClient.LOGGER.debug(
+               "Probed audio duration ~{}ms ({} bytes, {} bps)", ms, audioBytes, brObj
+            );
+            return ms;
+         }
+      } catch (Exception e) {
+         SimpMusicClient.LOGGER.debug("Duration probe failed: {}", e.getMessage());
+      }
+
+      return -1L;
    }
 
    private static byte[] downloadAudioData(String url) {
@@ -148,7 +238,15 @@ public class MusicAudioStream {
             .build();
          HttpResponse<byte[]> resp = HTTP.send(req, BodyHandlers.ofByteArray());
          byte[] body = resp.body();
+
          if (resp.statusCode() == 200 && body != null && body.length > 0) {
+            // 服务端声明了长度却收得更少 → 明确被截断，交给上层重新解析地址重下
+            long declared = resp.headers().firstValueAsLong("content-length").orElse(-1L);
+            if (declared > 0L && body.length < declared) {
+               SimpMusicClient.LOGGER.warn("Audio truncated by length: got {} of {} bytes", body.length, declared);
+               return null;
+            }
+
             if (isAudioData(body)) {
                return body;
             }
@@ -195,6 +293,11 @@ public class MusicAudioStream {
          if (decoded == null) {
             notifyPlaybackFailed(title, "音频解码失败（可能需要 mp3spi 等解码库）");
          } else {
+            // 记录起播信息：用于播放结束时向服务端上报已播秒数
+            playingSongId = songId != null ? songId : "";
+            playbackStartOffsetSeconds = Math.max(0, startOffsetSeconds);
+            playbackStartWallMs = System.currentTimeMillis();
+
             try {
                if (!startDirectOpenAl(decoded, title, artist, volume)) {
                   playPcmLineFallback(decoded.pcmStream, decoded.pcmFormat, volume, title, artist);
@@ -349,6 +452,7 @@ public class MusicAudioStream {
             } else if (state == 4113 || state == 4116) {
                if (alBufferQueue.isEmpty() && streamEofConsumed) {
                   SimpMusicClient.LOGGER.info("Playback finished (all data consumed)");
+                  sendPlayFinished();
                   cleanupDirect();
                   MusicHud.endSong();
                   return;
@@ -363,6 +467,36 @@ public class MusicAudioStream {
             cleanupDirect();
          }
       }
+   }
+
+   /**
+    * 向服务端上报「本端音频已播放结束」。
+    *
+    * <p>客户端是唯一知道音频何时真正结束的一方。上报后服务端会立即推进队列，
+    * 不再依赖「时长 + 3 秒」超时；这样即使 VIP 直链里拿到的音频比标称时长短，
+    * 也不会出现「歌早就停了、界面还显示正在播放」。
+    */
+   private static void sendPlayFinished() {
+      String id = playingSongId;
+      if (id == null || id.isEmpty()) {
+         return;
+      }
+
+      long elapsed = playbackStartOffsetSeconds + (System.currentTimeMillis() - playbackStartWallMs) / 1000L;
+
+      try {
+         net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.send(
+            net.minecraft.util.Identifier.of("simpmusic", "play_finished"),
+            net.fabricmc.fabric.api.networking.v1.PacketByteBufs.create()
+               .writeString(id)
+               .writeInt((int)Math.max(0L, elapsed))
+         );
+         SimpMusicClient.LOGGER.info("Reported playback finished for {} ({}s)", id, Math.max(0L, elapsed));
+      } catch (Exception e) {
+         SimpMusicClient.LOGGER.debug("send play_finished failed: {}", e.getMessage());
+      }
+
+      playingSongId = "";
    }
 
    private static void cleanupDirect() {
@@ -462,6 +596,14 @@ public class MusicAudioStream {
       return Math.max(0.0F, Math.min(2.0F, v));
    }
 
+   /** 向玩家发一条 actionbar 提示 */
+   private static void notifyActionbar(String message) {
+      MinecraftClient client = MinecraftClient.getInstance();
+      if (client != null && client.player != null) {
+         client.player.sendMessage(Text.literal(message), true);
+      }
+   }
+
    private static void notifyPlaybackFailed(String title, String reason) {
       MinecraftClient client = MinecraftClient.getInstance();
       if (client.player != null) {
@@ -491,6 +633,8 @@ public class MusicAudioStream {
 
             if (activeLine == line) {
                line.drain();
+               // 走完整个流 → 正常结束，上报服务端
+               sendPlayFinished();
             }
          } catch (Exception e) {
             if (activeLine == line) {

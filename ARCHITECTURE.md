@@ -42,6 +42,8 @@ SimpMusic 是 **C/S 双端模组**：服务端负责网易云 API 网关、点�
 - `playNext()`：弹队列 → 广播 PlaySongPacket（含封面/专辑/时长）→ 异步加载并广播歌词包
 - tick 驱动（`END_SERVER_TICK`）：每 5 tick 做超时检测（进度/歌词渲染由客户端 HUD 负责）；MTR 模式降到每 2 tick
 - 玩家中途 JOIN → 补发 PlaySongPacket 与已加载歌词
+- 封面：客户端优先直连图片 CDN，失败则由服务端代下（request_cover → cover 包回传）
+- 音频结束：客户端上报 play_finished，服务端据此立即推进队列（不再只靠时长超时）
 
 ### 网络包协议（Fabric Custom Payload，id 前缀 `simpmusic:`）
 

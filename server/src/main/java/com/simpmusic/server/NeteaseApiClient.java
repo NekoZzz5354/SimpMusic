@@ -20,6 +20,13 @@ import java.util.function.Consumer;
 
 public class NeteaseApiClient {
    private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10L)).build();
+   /** 图片专用客户端：必须跟随重定向（网易云图片会 302 到其它 CDN 节点） */
+   private static final HttpClient HTTP_IMG = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(10L))
+      .followRedirects(HttpClient.Redirect.NORMAL)
+      .build();
+   /** 封面字节上限 */
+   private static final int MAX_IMAGE_BYTES = 512 * 1024;
    private static final String OFFICIAL_HOST = "music.163.com";
 
    /** 移动端 UA：网易云对移动端放的音质档位通常更高，VIP 鉴权也最稳定 */
@@ -390,6 +397,106 @@ public class NeteaseApiClient {
             return text != null && !text.isEmpty() ? text : null;
          }
       }
+      return null;
+   }
+
+   /**
+    * 按歌曲 ID 解析专辑封面地址。
+    *
+    * <p>先试新版 {@code /api/v3/song/detail}（取 {@code al.picUrl}），
+    * 再退回旧版 {@code /api/song/detail}（取 {@code album.picUrl}）。
+    * 供客户端请求封面中转时兜底使用。
+    */
+   public static String resolveCoverUrl(String songId) {
+      if (songId == null || songId.isEmpty()) {
+         return null;
+      }
+
+      String base = ModConfig.getApiBaseUrl().replaceAll("/$", "");
+      String[] urls = new String[]{
+         base + "/api/v3/song/detail?c=" + URLEncoder.encode("[{\"id\":" + songId + "}]", StandardCharsets.UTF_8),
+         base + "/api/song/detail?ids=" + URLEncoder.encode("[" + songId + "]", StandardCharsets.UTF_8)
+      };
+
+      for (String url : urls) {
+         try {
+            HttpResponse<String> resp = HTTP.send(
+               officialRequest(url, UA_PC).build(), BodyHandlers.ofString(StandardCharsets.UTF_8)
+            );
+            if (resp.statusCode() != 200) {
+               continue;
+            }
+
+            JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
+            if (!root.has("songs") || !root.get("songs").isJsonArray()) {
+               continue;
+            }
+
+            JsonArray songs = root.getAsJsonArray("songs");
+            if (songs.size() == 0) {
+               continue;
+            }
+
+            JsonObject s = songs.get(0).getAsJsonObject();
+            String pic = readPicUrl(s, "al");
+            if (pic == null) {
+               pic = readPicUrl(s, "album");
+            }
+
+            if (pic != null && !pic.isEmpty()) {
+               return pic;
+            }
+         } catch (Exception e) {
+            SimpMusicServer.LOGGER.debug("resolveCoverUrl error ({}): {}", url, e.getMessage());
+         }
+      }
+
+      return null;
+   }
+
+   private static String readPicUrl(JsonObject song, String albumField) {
+      if (song.has(albumField) && song.get(albumField).isJsonObject()) {
+         JsonObject album = song.getAsJsonObject(albumField);
+         if (album.has("picUrl") && !album.get("picUrl").isJsonNull()) {
+            String pic = album.get("picUrl").getAsString();
+            return pic != null && !pic.isEmpty() ? pic : null;
+         }
+      }
+
+      return null;
+   }
+
+   /** 下载图片字节（跟随重定向、限制大小）。供封面中转使用。 */
+   public static byte[] downloadImage(String url) {
+      if (url == null || url.isEmpty()) {
+         return null;
+      }
+
+      try {
+         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+            .header("User-Agent", UA_PC)
+            .header("Referer", UA_REFERER)
+            .header("Accept", "image/jpeg,image/png,image/bmp,image/gif,*/*;q=0.6")
+            .timeout(Duration.ofSeconds(20L))
+            .GET()
+            .build();
+         HttpResponse<byte[]> resp = HTTP_IMG.send(req, BodyHandlers.ofByteArray());
+         byte[] body = resp.body();
+
+         if (resp.statusCode() == 200 && body != null && body.length > 0) {
+            if (body.length > MAX_IMAGE_BYTES) {
+               SimpMusicServer.LOGGER.warn("Cover too large: {} bytes ({})", body.length, url);
+               return null;
+            }
+
+            return body;
+         }
+
+         SimpMusicServer.LOGGER.debug("Cover download HTTP {}: {}", resp.statusCode(), url);
+      } catch (Exception e) {
+         SimpMusicServer.LOGGER.warn("Cover download error: {} — {}", e.getMessage(), url);
+      }
+
       return null;
    }
 

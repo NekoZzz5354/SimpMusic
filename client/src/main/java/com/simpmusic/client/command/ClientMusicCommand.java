@@ -8,6 +8,7 @@ import com.simpmusic.client.SimpMusicClient;
 import com.simpmusic.client.NeteaseApiClient;
 import com.simpmusic.client.audio.MusicAudioStream;
 import com.simpmusic.client.gui.MusicScreen;
+import com.simpmusic.client.hud.MusicHud;
 import com.simpmusic.client.gui.MusicSettingsScreen;
 import com.simpmusic.client.update.UpdateChecker;
 import net.fabricmc.api.EnvType;
@@ -131,7 +132,12 @@ public class ClientMusicCommand {
                         }
                      )
                ))
-            .then(ClientCommandManager.literal("help").executes(ctx -> {
+               .then(ClientCommandManager.literal("hud").executes(ctx -> {
+               ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§6=== 歌曲 HUD 状态 ===").formatted(Formatting.GOLD));
+               ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e" + MusicHud.describe()));
+               return 1;
+            }))
+         .then(ClientCommandManager.literal("help").executes(ctx -> {
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§6=== SimpMusic 客户端命令 ===").formatted(Formatting.GOLD));
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic gui §7- 打开点歌界面"));
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic settings §7- 打开设置"));
@@ -144,6 +150,7 @@ public class ClientMusicCommand {
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic update token <token> §7- 设置 GitHub Token"));
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic update url <url> §7- 设置更新 API 地址"));
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic status §7- 查看状态"));
+               ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic hud §7- 查看歌曲 HUD / 封面加载状态"));
                ((FabricClientCommandSource)ctx.getSource()).sendFeedback(Text.literal("§e/simpmusic help §7- 显示帮助"));
                return 1;
             }))

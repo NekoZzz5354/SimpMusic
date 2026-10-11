@@ -3,6 +3,7 @@ package com.simpmusic.client.network;
 import com.simpmusic.client.SimpMusicClient;
 import com.simpmusic.client.audio.MusicAudioStream;
 import com.simpmusic.client.gui.MusicScreen;
+import com.simpmusic.client.hud.CoverTexture;
 import com.simpmusic.client.hud.MusicHud;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,7 +31,7 @@ public class ClientNetworkHandler {
          client.execute(() -> {
             try {
                MusicHud.beginSong(songId, title, artist, album, requester, coverUrl, duration, startOffset);
-               MusicAudioStream.play(songId, title, artist, url, startOffset);
+               MusicAudioStream.play(songId, title, artist, url, duration, startOffset);
                SimpMusicClient.setPlaying(true, title + " - " + artist);
                if (client.player != null) {
                   client.player.sendMessage(Text.literal("§a\ud83c\udfb5 正在播放: " + title + " - " + artist), true);
@@ -58,6 +59,14 @@ public class ClientNetworkHandler {
          }
 
          client.execute(() -> MusicHud.setLyrics(songId, lines));
+      });
+
+      // ---- 服务端中转回来的封面图片字节 ----
+      ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "cover"), (client, handler, buf, responseSender) -> {
+         String songId = buf.readString();
+         byte[] data = buf.readByteArray();
+         SimpMusicClient.LOGGER.info("Received relayed cover from server: song={} {} bytes", songId, data == null ? 0 : data.length);
+         client.execute(() -> CoverTexture.accept(songId, data));
       });
 
       ClientPlayNetworking.registerGlobalReceiver(Identifier.of("simpmusic", "stop_song"), (client, handler, buf, responseSender) -> client.execute(() -> {

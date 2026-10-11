@@ -49,6 +49,8 @@ public class MusicQueueManager {
    private static volatile List<MusicQueueManager.LyricLine> currentLyrics = new ArrayList<>();
    private static volatile String lyricsSongId = "";
    private static boolean startedCalibrated = false;
+   /** 本首歌曲中「提前结束播放」的玩家（用于判断是否为音频被截断，而不是大家一起正常听完） */
+   private static final Set<UUID> earlyFinishers = new HashSet<>();
 
    /** LRC 时间标签：{@code [mm:ss.xx]}，允许一行出现多个（翻译文件常见） */
    private static final Pattern TIME_TAG = Pattern.compile("\\[(\\d+):(\\d+(?:\\.\\d+)?)\\]");
@@ -366,6 +368,62 @@ public class MusicQueueManager {
       );
    }
 
+   /**
+    * 客户端上报「本端音频已播放结束」。
+    *
+    * <p>解决「VIP 歌曲播到一半就停了，但服务端仍显示正在播放」的状态不同步：
+    * <ul>
+    *   <li>若已播到接近结尾（≥ 时长 75%）→ 认定歌曲真的结束，立即切下一首，
+    *       不再干等「时长 + 3 秒」超时；</li>
+    *   <li>若明显提前结束（可能是音频被截断/网络中断）→ 先记录，不贸然切歌；
+    *       当场上所有在线玩家都反馈结束时再推进，避免单个玩家的问题影响其他人。</li>
+    * </ul>
+    */
+   public static void onClientPlaybackFinished(ServerPlayerEntity player, String songId, int playedSeconds) {
+      if (!onServerThread()) {
+         final ServerPlayerEntity p = player;
+         final String id = songId;
+         final int sec = playedSeconds;
+         dispatch(() -> onClientPlaybackFinished(p, id, sec));
+         return;
+      }
+
+      if (currentPlaying == null) {
+         return;
+      }
+
+      if (songId != null && !songId.isEmpty() && !songId.equals(currentPlaying.songId)) {
+         // 上一首的迟到上报，忽略
+         return;
+      }
+
+      long elapsedMs = System.currentTimeMillis() - currentStartTimeMs;
+      int durationMs = currentPlaying.duration * 1000;
+      boolean nearEnd = durationMs <= 0 || elapsedMs >= (long)(durationMs * 0.75);
+
+      if (nearEnd) {
+         SimpMusicServer.LOGGER.info(
+            "Playback finished reported by {} for {} ({}s/%ds) — advancing",
+            player.getName().getString(), currentPlaying.title, playedSeconds, currentPlaying.duration
+         );
+         skipCurrent();
+         return;
+      }
+
+      earlyFinishers.add(player.getUuid());
+      int online = server != null ? Math.max(1, server.getPlayerManager().getPlayerList().size()) : 1;
+
+      SimpMusicServer.LOGGER.warn(
+         "Client {} reports early playback end for {} at {}s/{}s ({}/{} players) — 可能音频被截断",
+         player.getName().getString(), currentPlaying.title, playedSeconds, currentPlaying.duration, earlyFinishers.size(), online
+      );
+
+      if (earlyFinishers.size() >= online) {
+         SimpMusicServer.LOGGER.warn("All online players finished playback early — advancing {}", currentPlaying.title);
+         skipCurrent();
+      }
+   }
+
    public static void stopAll() {
       if (!onServerThread()) {
          dispatch(MusicQueueManager::stopAll);
@@ -402,6 +460,7 @@ public class MusicQueueManager {
       lyricsSongId = "";
       startedCalibrated = false;
       skipVoters.clear();
+      earlyFinishers.clear();
    }
 
    /** 向所有在线玩家广播 actionbar 消息（顶部提示，不刷屏聊天栏） */

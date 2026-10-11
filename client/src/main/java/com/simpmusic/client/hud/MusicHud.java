@@ -89,7 +89,7 @@ public final class MusicHud {
       lines = new ArrayList<>();
       startTimeMs = System.currentTimeMillis() - Math.max(0, offsetSeconds) * 1000L;
       active = true;
-      CoverTexture.request(coverUrl);
+      CoverTexture.request(songId, coverUrl);
    }
 
    /**
@@ -359,7 +359,7 @@ public final class MusicHud {
 
       return String.format(
          "HUD: %s - %s | 歌词 %d 行 | 封面 %s",
-         title, artist, lines.size(), CoverTexture.hasImage() ? "已就绪" : "未加载"
+         title, artist, lines.size(), CoverTexture.describe()
       );
    }
 }
